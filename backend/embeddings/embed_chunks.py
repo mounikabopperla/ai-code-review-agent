@@ -10,7 +10,7 @@ from backend.vector_store.qdrant_store import (
 )
 
 
-DEFAULT_BATCH_SIZE = 32
+DEFAULT_BATCH_SIZE = 4
 
 
 def load_chunks(chunk_file: str):

@@ -1,10 +1,23 @@
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoModel, AutoTokenizer
+
+
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def load_embedding_model():
-    model_name = "BAAI/bge-base-en-v1.5"
+    """
+    Loads the lightweight MiniLM embedding model.
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name)
+    Output embedding dimension: 384
+    """
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_NAME
+    )
+
+    model = AutoModel.from_pretrained(
+        MODEL_NAME
+    )
+
+    model.eval()
 
     return tokenizer, model

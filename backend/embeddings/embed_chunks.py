@@ -10,26 +10,40 @@ from backend.vector_store.qdrant_store import (
 )
 
 
-DEFAULT_BATCH_SIZE = 4
+# Larger than the Railway-safe batch of 4,
+# but still conservative for MiniLM.
+DEFAULT_BATCH_SIZE = 16
+
+# MiniLM is commonly used with shorter input lengths,
+# which also reduces memory and inference time.
+MAX_LENGTH = 256
 
 
 def load_chunks(chunk_file: str):
     """
     Reads a chunks.jsonl file and returns all chunks.
     """
+
     chunk_path = Path(chunk_file)
 
-    with chunk_path.open("r", encoding="utf-8") as file:
+    with chunk_path.open(
+        "r",
+        encoding="utf-8",
+    ) as file:
         return [
             json.loads(line)
             for line in file
         ]
 
 
-def prepare_chunk_text(chunk: dict) -> str:
+def prepare_chunk_text(
+    chunk: dict,
+) -> str:
     """
-    Combines chunk metadata and content into searchable text.
+    Combines chunk metadata and content
+    into searchable text.
     """
+
     return f"""
 File: {chunk["file_path"]}
 Name: {chunk["name"]}
@@ -47,19 +61,24 @@ def generate_embedding(
     model,
 ) -> list[float]:
     """
-    Converts one text into one normalized embedding vector.
+    Converts one text into one normalized
+    embedding vector.
     """
+
     inputs = tokenizer(
         text,
         return_tensors="pt",
         truncation=True,
-        max_length=512,
+        max_length=MAX_LENGTH,
     )
 
-    with torch.no_grad():
+    with torch.inference_mode():
         outputs = model(**inputs)
 
-    embedding = outputs.last_hidden_state[:, 0]
+    embedding = (
+        outputs
+        .last_hidden_state[:, 0]
+    )
 
     embedding = torch.nn.functional.normalize(
         embedding,
@@ -76,21 +95,25 @@ def generate_embeddings_batch(
     model,
 ) -> list[list[float]]:
     """
-    Converts multiple texts into normalized embeddings
-    in one model call.
+    Converts multiple texts into normalized
+    embeddings in one model call.
     """
+
     inputs = tokenizer(
         texts,
         return_tensors="pt",
         padding=True,
         truncation=True,
-        max_length=512,
+        max_length=MAX_LENGTH,
     )
 
-    with torch.no_grad():
+    with torch.inference_mode():
         outputs = model(**inputs)
 
-    embeddings = outputs.last_hidden_state[:, 0]
+    embeddings = (
+        outputs
+        .last_hidden_state[:, 0]
+    )
 
     embeddings = torch.nn.functional.normalize(
         embeddings,
@@ -101,16 +124,22 @@ def generate_embeddings_batch(
     return embeddings.tolist()
 
 
-def build_payload(chunk: dict) -> dict:
+def build_payload(
+    chunk: dict,
+) -> dict:
     """
     Creates metadata stored with each vector.
     """
+
     return {
         "chunk_id": chunk["chunk_id"],
         "file_path": chunk["file_path"],
         "name": chunk["name"],
         "type": chunk["type"],
-        "docstring": chunk.get("docstring", ""),
+        "docstring": chunk.get(
+            "docstring",
+            "",
+        ),
         "source_code": chunk["source_code"],
         "start_line": chunk["start_line"],
         "end_line": chunk["end_line"],
@@ -123,8 +152,8 @@ def embed_and_store_chunks(
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
     """
-    Generates embeddings and stores them in a repository-specific
-    Qdrant collection.
+    Generates embeddings and stores them
+    in a repository-specific Qdrant collection.
     """
 
     if not chunks:
@@ -136,23 +165,35 @@ def embed_and_store_chunks(
         f"in batches of {batch_size}..."
     )
 
-    tokenizer, model = load_embedding_model()
+    tokenizer, model = (
+        load_embedding_model()
+    )
+
     model.eval()
 
-    client, collection_name = reset_repository_collection(
-        repository_name
+    client, collection_name = (
+        reset_repository_collection(
+            repository_name
+        )
     )
 
     print(
-        f"Using Qdrant collection: {collection_name}"
+        f"Using Qdrant collection: "
+        f"{collection_name}"
     )
 
     total_batches = (
-        len(chunks) + batch_size - 1
+        len(chunks)
+        + batch_size
+        - 1
     ) // batch_size
 
     for batch_number, start in enumerate(
-        range(0, len(chunks), batch_size),
+        range(
+            0,
+            len(chunks),
+            batch_size,
+        ),
         start=1,
     ):
         end = min(
@@ -167,10 +208,12 @@ def embed_and_store_chunks(
             for chunk in batch_chunks
         ]
 
-        embeddings = generate_embeddings_batch(
-            texts,
-            tokenizer,
-            model,
+        embeddings = (
+            generate_embeddings_batch(
+                texts,
+                tokenizer,
+                model,
+            )
         )
 
         points = []
@@ -184,13 +227,17 @@ def embed_and_store_chunks(
                 embeddings,
             )
         ):
-            point_id = start + offset
+            point_id = (
+                start + offset
+            )
 
             points.append(
                 PointStruct(
                     id=point_id,
                     vector=embedding,
-                    payload=build_payload(chunk),
+                    payload=build_payload(
+                        chunk
+                    ),
                 )
             )
 
@@ -200,12 +247,22 @@ def embed_and_store_chunks(
         )
 
         print(
-            f"Batch {batch_number}/{total_batches} "
-            f"stored ({end}/{len(chunks)} chunks)"
+            f"Batch "
+            f"{batch_number}/"
+            f"{total_batches} "
+            f"stored "
+            f"({end}/{len(chunks)} chunks)"
         )
 
+        # Release temporary tensors/references
+        # before processing the next batch.
+        del texts
+        del embeddings
+        del points
+
     print(
-        f"Finished storing {len(chunks)} vectors "
+        f"Finished storing "
+        f"{len(chunks)} vectors "
         f"in {collection_name}."
     )
 
@@ -221,11 +278,16 @@ if __name__ == "__main__":
         f"Loaded {len(chunks)} chunks"
     )
 
-    stored_count = embed_and_store_chunks(
-        chunks,
-        repository_name="manual_repository",
+    stored_count = (
+        embed_and_store_chunks(
+            chunks,
+            repository_name=(
+                "manual_repository"
+            ),
+        )
     )
 
     print(
-        f"Stored {stored_count} vectors in Qdrant"
+        f"Stored {stored_count} "
+        f"vectors in Qdrant"
     )

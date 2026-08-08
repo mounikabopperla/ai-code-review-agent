@@ -5,7 +5,10 @@ from qdrant_client.models import Distance, VectorParams
 
 
 QDRANT_PATH = "qdrant_storage"
-VECTOR_SIZE = 768
+
+# all-MiniLM-L6-v2 produces 384-dimensional embeddings.
+VECTOR_SIZE = 384
+
 
 _client: QdrantClient | None = None
 _active_collection: str | None = None
@@ -29,9 +32,10 @@ def sanitize_collection_name(
     repository_name: str,
 ) -> str:
     """
-    Converts a repository name into a safe Qdrant
-    collection name.
+    Converts a repository name into a safe
+    Qdrant collection name.
     """
+
     name = repository_name.strip().lower()
 
     name = re.sub(
@@ -52,9 +56,10 @@ def set_active_collection(
     collection_name: str,
 ) -> None:
     """
-    Marks a repository collection as the active one.
+    Marks a repository collection as active.
     """
     global _active_collection
+
     _active_collection = collection_name
 
 
@@ -62,6 +67,7 @@ def get_active_collection() -> str:
     """
     Returns the currently active repository collection.
     """
+
     if not _active_collection:
         raise RuntimeError(
             "No repository is currently active. "
@@ -75,9 +81,10 @@ def ensure_repository_collection(
     repository_name: str,
 ):
     """
-    Creates a dedicated Qdrant collection for a repository
-    if it does not already exist.
+    Creates a dedicated Qdrant collection
+    for a repository if necessary.
     """
+
     client = get_qdrant_client()
 
     collection_name = sanitize_collection_name(
@@ -106,10 +113,13 @@ def reset_repository_collection(
     repository_name: str,
 ):
     """
-    Deletes and recreates only this repository's collection.
+    Deletes and recreates this repository's
+    Qdrant collection.
 
-    Other repositories remain untouched.
+    This is important when embedding dimensions
+    or repository contents change.
     """
+
     client = get_qdrant_client()
 
     collection_name = sanitize_collection_name(

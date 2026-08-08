@@ -5,12 +5,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.rag.pipeline import answer_question
 from backend.api.indexing_routes import router as indexing_router
 
+
 app = FastAPI(
     title="AI Code Review Agent API",
     version="1.0.0",
 )
 
 app.include_router(indexing_router)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,15 +21,14 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
+        "https://capable-enchantment-production-2647.up.railway.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -----------------------------
-# UPDATED REQUEST MODEL
-# -----------------------------
+
 class QuestionRequest(BaseModel):
     question: str
     explanation_mode: str = "beginner"

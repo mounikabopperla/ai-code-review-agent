@@ -1,0 +1,53 @@
+# ==========================================
+# Secrets / environment
+# ==========================================
+.env
+.env.*
+!.env.example
+
+# ==========================================
+# Python
+# ==========================================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+
+# ==========================================
+# Frontend
+# ==========================================
+frontend/node_modules/
+frontend/dist/
+
+# ==========================================
+# Local application data
+# ==========================================
+qdrant_storage/
+cloned_repos/
+
+# ==========================================
+# Generated / temporary project files
+# ==========================================
+chunks.jsonl
+code-review-agent.zip
+test_docs.py
+
+# External repositories used for testing
+click/
+
+# ==========================================
+# macOS / IDE
+# ==========================================
+.DS_Store
+.vscode/
+.idea/
+
+# ==========================================
+# Logs / coverage
+# ==========================================
+*.log
+.coverage
+htmlcov/

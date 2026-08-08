@@ -1,0 +1,29 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: code-review-backend
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - qdrant_data:/app/qdrant_storage
+      - cloned_repos:/app/cloned_repos
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_URL: http://127.0.0.1:8000
+    container_name: code-review-frontend
+    ports:
+      - "5174:5174"
+    depends_on:
+      - backend
+
+volumes:
+  qdrant_data:
+  cloned_repos:

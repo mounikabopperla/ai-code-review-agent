@@ -1,24 +1,19 @@
-from google import genai
+import voyageai
 
 from backend.config.settings import settings
 
 
-EMBEDDING_MODEL = "gemini-embedding-001"
-EMBEDDING_DIMENSION = 768
-
-
-client = genai.Client(
-    api_key=settings.google_api_key
-)
+EMBEDDING_MODEL = "voyage-3.5-lite"
+EMBEDDING_DIMENSION = 512
 
 
 def load_embedding_model():
     """
-    Returns the Gemini client and embedding model name.
-
-    The actual embedding computation is handled by
-    the Gemini Embeddings API instead of running a
-    transformer locally on Railway.
+    Creates the Voyage AI client used for embeddings.
     """
+
+    client = voyageai.Client(
+        api_key=settings.voyage_api_key
+    )
 
     return client, EMBEDDING_MODEL

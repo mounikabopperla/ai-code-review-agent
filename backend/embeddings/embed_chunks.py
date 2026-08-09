@@ -6,7 +6,6 @@ from qdrant_client.models import PointStruct
 
 from backend.embeddings.model import (
     EMBEDDING_DIMENSION,
-    EMBEDDING_MODEL,
     load_embedding_model,
 )
 from backend.vector_store.qdrant_store import (
@@ -16,13 +15,16 @@ from backend.vector_store.qdrant_store import (
 
 logger = logging.getLogger("embed-chunks")
 
-DEFAULT_BATCH_SIZE = 32
+# Voyage recommends sending multiple documents per request
+# to improve throughput and reduce request count.
+DEFAULT_BATCH_SIZE = 64
 
 
 def load_chunks(chunk_file: str):
     """
     Reads a chunks.jsonl file and returns all chunks.
     """
+
     chunk_path = Path(chunk_file)
 
     with chunk_path.open(
@@ -59,21 +61,17 @@ def generate_embedding(
     model_name: str,
 ) -> list[float]:
     """
-    Generates one embedding.
-
-    Used for a single user question during retrieval.
+    Generates one embedding for a user query.
     """
 
-    response = client.models.embed_content(
+    result = client.embed(
+        [text],
         model=model_name,
-        contents=text,
-        config={
-            "task_type": "RETRIEVAL_QUERY",
-            "output_dimensionality": EMBEDDING_DIMENSION,
-        },
+        input_type="query",
+        output_dimension=EMBEDDING_DIMENSION,
     )
 
-    return response.embeddings[0].values
+    return result.embeddings[0]
 
 
 def generate_embeddings_batch(
@@ -82,23 +80,19 @@ def generate_embeddings_batch(
     model_name: str,
 ) -> list[list[float]]:
     """
-    Generates embeddings for multiple repository chunks
-    using Gemini's embedding API.
+    Generates embeddings for repository chunks.
+
+    All texts in this call are treated as retrieval documents.
     """
 
-    response = client.models.embed_content(
+    result = client.embed(
+        texts,
         model=model_name,
-        contents=texts,
-        config={
-            "task_type": "RETRIEVAL_DOCUMENT",
-            "output_dimensionality": EMBEDDING_DIMENSION,
-        },
+        input_type="document",
+        output_dimension=EMBEDDING_DIMENSION,
     )
 
-    return [
-        embedding.values
-        for embedding in response.embeddings
-    ]
+    return result.embeddings
 
 
 def build_payload(
@@ -129,8 +123,8 @@ def embed_and_store_chunks(
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
     """
-    Generates embeddings using Gemini and stores
-    them in a repository-specific Qdrant collection.
+    Generates Voyage embeddings and stores them
+    in a repository-specific Qdrant collection.
     """
 
     if not chunks:

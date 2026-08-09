@@ -6,8 +6,8 @@ from qdrant_client.models import Distance, VectorParams
 
 QDRANT_PATH = "qdrant_storage"
 
-# Gemini embeddings are configured to produce 768-dimensional vectors.
-VECTOR_SIZE = 768
+# Voyage embeddings are configured to produce 512-dimensional vectors.
+VECTOR_SIZE = 512
 
 
 _client: QdrantClient | None = None

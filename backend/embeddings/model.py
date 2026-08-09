@@ -1,23 +1,24 @@
-from transformers import AutoModel, AutoTokenizer
+from google import genai
+
+from backend.config.settings import settings
 
 
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_DIMENSION = 768
+
+
+client = genai.Client(
+    api_key=settings.google_api_key
+)
 
 
 def load_embedding_model():
     """
-    Loads the lightweight MiniLM embedding model.
+    Returns the Gemini client and embedding model name.
 
-    Output embedding dimension: 384
+    The actual embedding computation is handled by
+    the Gemini Embeddings API instead of running a
+    transformer locally on Railway.
     """
-    tokenizer = AutoTokenizer.from_pretrained(
-        MODEL_NAME
-    )
 
-    model = AutoModel.from_pretrained(
-        MODEL_NAME
-    )
-
-    model.eval()
-
-    return tokenizer, model
+    return client, EMBEDDING_MODEL

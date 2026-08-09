@@ -1,29 +1,28 @@
 import json
+import logging
 from pathlib import Path
 
-import torch
 from qdrant_client.models import PointStruct
 
-from backend.embeddings.model import load_embedding_model
+from backend.embeddings.model import (
+    EMBEDDING_DIMENSION,
+    EMBEDDING_MODEL,
+    load_embedding_model,
+)
 from backend.vector_store.qdrant_store import (
     reset_repository_collection,
 )
 
 
-# Larger than the Railway-safe batch of 4,
-# but still conservative for MiniLM.
-DEFAULT_BATCH_SIZE = 16
+logger = logging.getLogger("embed-chunks")
 
-# MiniLM is commonly used with shorter input lengths,
-# which also reduces memory and inference time.
-MAX_LENGTH = 256
+DEFAULT_BATCH_SIZE = 32
 
 
 def load_chunks(chunk_file: str):
     """
     Reads a chunks.jsonl file and returns all chunks.
     """
-
     chunk_path = Path(chunk_file)
 
     with chunk_path.open(
@@ -40,8 +39,7 @@ def prepare_chunk_text(
     chunk: dict,
 ) -> str:
     """
-    Combines chunk metadata and content
-    into searchable text.
+    Combines chunk metadata and content into searchable text.
     """
 
     return f"""
@@ -57,71 +55,50 @@ Source Code / Documentation:
 
 def generate_embedding(
     text: str,
-    tokenizer,
-    model,
+    client,
+    model_name: str,
 ) -> list[float]:
     """
-    Converts one text into one normalized
-    embedding vector.
+    Generates one embedding.
+
+    Used for a single user question during retrieval.
     """
 
-    inputs = tokenizer(
-        text,
-        return_tensors="pt",
-        truncation=True,
-        max_length=MAX_LENGTH,
+    response = client.models.embed_content(
+        model=model_name,
+        contents=text,
+        config={
+            "task_type": "RETRIEVAL_QUERY",
+            "output_dimensionality": EMBEDDING_DIMENSION,
+        },
     )
 
-    with torch.inference_mode():
-        outputs = model(**inputs)
-
-    embedding = (
-        outputs
-        .last_hidden_state[:, 0]
-    )
-
-    embedding = torch.nn.functional.normalize(
-        embedding,
-        p=2,
-        dim=1,
-    )
-
-    return embedding[0].tolist()
+    return response.embeddings[0].values
 
 
 def generate_embeddings_batch(
     texts: list[str],
-    tokenizer,
-    model,
+    client,
+    model_name: str,
 ) -> list[list[float]]:
     """
-    Converts multiple texts into normalized
-    embeddings in one model call.
+    Generates embeddings for multiple repository chunks
+    using Gemini's embedding API.
     """
 
-    inputs = tokenizer(
-        texts,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=MAX_LENGTH,
+    response = client.models.embed_content(
+        model=model_name,
+        contents=texts,
+        config={
+            "task_type": "RETRIEVAL_DOCUMENT",
+            "output_dimensionality": EMBEDDING_DIMENSION,
+        },
     )
 
-    with torch.inference_mode():
-        outputs = model(**inputs)
-
-    embeddings = (
-        outputs
-        .last_hidden_state[:, 0]
-    )
-
-    embeddings = torch.nn.functional.normalize(
-        embeddings,
-        p=2,
-        dim=1,
-    )
-
-    return embeddings.tolist()
+    return [
+        embedding.values
+        for embedding in response.embeddings
+    ]
 
 
 def build_payload(
@@ -152,8 +129,8 @@ def embed_and_store_chunks(
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
     """
-    Generates embeddings and stores them
-    in a repository-specific Qdrant collection.
+    Generates embeddings using Gemini and stores
+    them in a repository-specific Qdrant collection.
     """
 
     if not chunks:
@@ -165,13 +142,9 @@ def embed_and_store_chunks(
         f"in batches of {batch_size}..."
     )
 
-    tokenizer, model = (
-        load_embedding_model()
-    )
+    client, model_name = load_embedding_model()
 
-    model.eval()
-
-    client, collection_name = (
+    qdrant_client, collection_name = (
         reset_repository_collection(
             repository_name
         )
@@ -208,12 +181,10 @@ def embed_and_store_chunks(
             for chunk in batch_chunks
         ]
 
-        embeddings = (
-            generate_embeddings_batch(
-                texts,
-                tokenizer,
-                model,
-            )
+        embeddings = generate_embeddings_batch(
+            texts,
+            client,
+            model_name,
         )
 
         points = []
@@ -227,9 +198,7 @@ def embed_and_store_chunks(
                 embeddings,
             )
         ):
-            point_id = (
-                start + offset
-            )
+            point_id = start + offset
 
             points.append(
                 PointStruct(
@@ -241,7 +210,7 @@ def embed_and_store_chunks(
                 )
             )
 
-        client.upsert(
+        qdrant_client.upsert(
             collection_name=collection_name,
             points=points,
         )
@@ -253,12 +222,6 @@ def embed_and_store_chunks(
             f"stored "
             f"({end}/{len(chunks)} chunks)"
         )
-
-        # Release temporary tensors/references
-        # before processing the next batch.
-        del texts
-        del embeddings
-        del points
 
     print(
         f"Finished storing "

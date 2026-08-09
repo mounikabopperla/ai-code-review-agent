@@ -118,7 +118,10 @@ def search_vectors(
     """
 
     client = get_qdrant_client()
-    collection_name = get_active_collection()
+
+    collection_name = (
+        get_active_collection()
+    )
 
     intent = detect_query_intent(
         question
@@ -152,14 +155,18 @@ def search_vectors(
 
 
 if __name__ == "__main__":
-    tokenizer, model = load_embedding_model()
+    client, model_name = (
+        load_embedding_model()
+    )
 
-    query = "What does this project do?"
+    query = (
+        "What does this project do?"
+    )
 
     query_vector = generate_embedding(
         query,
-        tokenizer,
-        model,
+        client,
+        model_name,
     )
 
     results = search_vectors(
@@ -180,16 +187,29 @@ if __name__ == "__main__":
 
     for result in results:
         print()
-        print("Score:", result.score)
+
+        print(
+            "Score:",
+            result.score,
+        )
+
         print(
             "Type:",
-            result.payload.get("type"),
+            result.payload.get(
+                "type"
+            ),
         )
+
         print(
             "File:",
-            result.payload.get("file_path"),
+            result.payload.get(
+                "file_path"
+            ),
         )
+
         print(
             "Name:",
-            result.payload.get("name"),
+            result.payload.get(
+                "name"
+            ),
         )

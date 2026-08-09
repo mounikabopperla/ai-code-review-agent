@@ -8,12 +8,6 @@ google-genai==2.16.0
 
 qdrant-client==1.18.0
 
-torch==2.13.0
-transformers==5.14.1
-tokenizers==0.22.2
-safetensors==0.8.0
-sentencepiece==0.2.2
-huggingface-hub==1.26.0
 numpy==2.5.1
 requests==2.34.2
 

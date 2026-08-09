@@ -49,11 +49,11 @@ EXCLUDED_DIRS = {
 
 # Prevent a very large repository from creating thousands
 # of embeddings on a small cloud server.
-MAX_TOTAL_CHUNKS = 300
+MAX_TOTAL_CHUNKS = 120
 
 # Keep documentation useful, but prevent documentation-heavy
 # repositories from dominating the index.
-MAX_DOCUMENT_CHUNKS = 60
+MAX_DOCUMENT_CHUNKS = 20
 
 
 def should_skip_path(path: Path) -> bool:

@@ -6,8 +6,8 @@ from qdrant_client.models import Distance, VectorParams
 
 QDRANT_PATH = "qdrant_storage"
 
-# all-MiniLM-L6-v2 produces 384-dimensional embeddings.
-VECTOR_SIZE = 384
+# Gemini embeddings are configured to produce 768-dimensional vectors.
+VECTOR_SIZE = 768
 
 
 _client: QdrantClient | None = None

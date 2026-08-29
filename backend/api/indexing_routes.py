@@ -1,17 +1,47 @@
 from pathlib import Path
 import shutil
 import subprocess
+import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    HTTPException,
+)
 from pydantic import BaseModel
 
-from backend.ingestion.chunk_code import chunk_repository
-from backend.embeddings.embed_chunks import embed_and_store_chunks
+from backend.ingestion.chunk_code import (
+    chunk_repository,
+)
+from backend.embeddings.embed_chunks import (
+    embed_and_store_chunks,
+)
+from backend.storage.repository_cache import (
+    get_cached_repository,
+    initialize_database,
+    save_repository,
+)
+from backend.vector_store.qdrant_store import (
+    sanitize_collection_name,
+    set_active_collection,
+)
 
 
 router = APIRouter()
 
 CLONED_REPOS_DIR = Path("cloned_repos")
+
+initialize_database()
+
+
+# ---------------------------------------------------------
+# Temporary in-memory analysis job storage
+#
+# Later we can move this to SQL as well so job status
+# survives server restarts.
+# ---------------------------------------------------------
+
+analysis_jobs: dict[str, dict] = {}
 
 
 class IndexRequest(BaseModel):
@@ -20,8 +50,10 @@ class IndexRequest(BaseModel):
 
 def is_github_url(value: str) -> bool:
     """
-    Returns True when the input looks like a GitHub repository URL.
+    Returns True when the input looks like
+    a GitHub repository URL.
     """
+
     value = value.strip().lower()
 
     return (
@@ -30,11 +62,17 @@ def is_github_url(value: str) -> bool:
     )
 
 
-def repository_name_from_url(url: str) -> str:
+def repository_name_from_url(
+    url: str,
+) -> str:
     """
-    Extracts the repository name from a GitHub URL.
+    Extracts repository name from a GitHub URL.
     """
-    repo_name = url.rstrip("/").split("/")[-1]
+
+    repo_name = (
+        url.rstrip("/")
+        .split("/")[-1]
+    )
 
     if repo_name.endswith(".git"):
         repo_name = repo_name[:-4]
@@ -46,12 +84,16 @@ def repository_name_from_path(
     repo_path: Path,
 ) -> str:
     """
-    Uses the local folder name as the repository name.
+    Uses the local directory name as
+    the repository name.
     """
+
     return repo_path.name
 
 
-def clone_github_repository(url: str) -> Path:
+def clone_github_repository(
+    url: str,
+) -> Path:
     """
     Clones a public GitHub repository locally.
     """
@@ -66,16 +108,14 @@ def clone_github_repository(url: str) -> Path:
     )
 
     if not repo_name:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Could not determine repository "
-                "name from GitHub URL."
-            ),
+        raise ValueError(
+            "Could not determine repository "
+            "name from GitHub URL."
         )
 
     destination = (
-        CLONED_REPOS_DIR / repo_name
+        CLONED_REPOS_DIR
+        / repo_name
     ).resolve()
 
     if destination.exists():
@@ -99,12 +139,9 @@ def clone_github_repository(url: str) -> Path:
         )
 
     except FileNotFoundError as error:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Git is not installed or "
-                "could not be found."
-            ),
+        raise RuntimeError(
+            "Git is not installed or "
+            "could not be found."
         ) from error
 
     except subprocess.CalledProcessError as error:
@@ -114,25 +151,304 @@ def clone_github_repository(url: str) -> Path:
             or "Git clone failed."
         )
 
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Could not clone repository: "
-                f"{message}"
-            ),
+        raise RuntimeError(
+            "Could not read this GitHub project: "
+            f"{message}"
         ) from error
 
     return destination
 
 
-@router.post("/index")
-def index_repository(
-    request: IndexRequest,
+def get_repository_commit_sha(
+    repo_path: Path,
+) -> str:
+    """
+    Returns the current Git commit SHA
+    for a cloned repository.
+    """
+
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "rev-parse",
+                "HEAD",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        return result.stdout.strip()
+
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            "Could not determine the repository version."
+        ) from error
+
+
+def update_job(
+    job_id: str,
+    *,
+    status: str,
+    progress: int,
+    message: str,
+    **extra,
 ):
     """
-    Index either:
-    - a local repository path
-    - or a public GitHub repository URL
+    Updates the current state of one analysis job.
+    """
+
+    analysis_jobs[job_id].update(
+        {
+            "status": status,
+            "progress": progress,
+            "message": message,
+            **extra,
+        }
+    )
+
+
+def run_repository_analysis(
+    job_id: str,
+    user_input: str,
+):
+    """
+    Performs repository analysis in the background.
+
+    GitHub repositories are checked against the
+    SQLite cache before expensive chunking and
+    embedding work is performed.
+    """
+
+    repo_path = None
+    source_type = None
+    repository_name = None
+    commit_sha = None
+
+    try:
+        # -------------------------------------------------
+        # Stage 1 — read project
+        # -------------------------------------------------
+
+        update_job(
+            job_id,
+            status="running",
+            progress=10,
+            message="Reading the project...",
+        )
+
+        if is_github_url(user_input):
+            source_type = "github"
+
+            repository_name = (
+                repository_name_from_url(
+                    user_input
+                )
+            )
+
+            repo_path = clone_github_repository(
+                user_input
+            )
+
+            commit_sha = (
+                get_repository_commit_sha(
+                    repo_path
+                )
+            )
+
+            # ---------------------------------------------
+            # Cache check
+            # ---------------------------------------------
+
+            cached_repository = (
+                get_cached_repository(
+                    user_input
+                )
+            )
+
+            if (
+                cached_repository
+                and cached_repository.get(
+                    "status"
+                ) == "completed"
+                and cached_repository.get(
+                    "commit_sha"
+                ) == commit_sha
+            ):
+                cached_collection = (
+                    cached_repository[
+                        "collection_name"
+                    ]
+                )
+
+                set_active_collection(
+                    cached_collection
+                )
+
+                update_job(
+                    job_id,
+                    status="completed",
+                    progress=100,
+                    message=(
+                        "Project ready"
+                    ),
+                    source_type=source_type,
+                    repository_name=(
+                        repository_name
+                    ),
+                    chunks_indexed=(
+                        cached_repository.get(
+                            "chunks_indexed",
+                            0,
+                        )
+                    ),
+                    cached=True,
+                )
+
+                return
+
+        else:
+            source_type = "local"
+
+            repo_path = (
+                Path(user_input)
+                .expanduser()
+                .resolve()
+            )
+
+            if not repo_path.exists():
+                raise ValueError(
+                    "Repository path does not exist."
+                )
+
+            if not repo_path.is_dir():
+                raise ValueError(
+                    "The provided path is not "
+                    "a directory."
+                )
+
+            repository_name = (
+                repository_name_from_path(
+                    repo_path
+                )
+            )
+
+        # -------------------------------------------------
+        # Stage 2 — understand project
+        # -------------------------------------------------
+
+        update_job(
+            job_id,
+            status="running",
+            progress=30,
+            message=(
+                "Understanding the important "
+                "parts..."
+            ),
+            repository_name=repository_name,
+        )
+
+        chunks = chunk_repository(
+            str(repo_path)
+        )
+
+        if not chunks:
+            raise ValueError(
+                "No supported project content "
+                "was found."
+            )
+
+        # -------------------------------------------------
+        # Stage 3 — prepare project
+        # -------------------------------------------------
+
+        update_job(
+            job_id,
+            status="running",
+            progress=55,
+            message=(
+                "Preparing the project for "
+                "your questions..."
+            ),
+            chunks_found=len(chunks),
+        )
+
+        stored_count = (
+            embed_and_store_chunks(
+                chunks,
+                repository_name=(
+                    repository_name
+                ),
+            )
+        )
+
+        # -------------------------------------------------
+        # Save successful GitHub analysis to SQLite
+        # -------------------------------------------------
+
+        if source_type == "github":
+            collection_name = (
+                sanitize_collection_name(
+                    repository_name
+                )
+            )
+
+            save_repository(
+                repository_url=user_input,
+                repository_name=(
+                    repository_name
+                ),
+                commit_sha=commit_sha,
+                collection_name=(
+                    collection_name
+                ),
+                status="completed",
+                chunks_indexed=stored_count,
+            )
+
+        # -------------------------------------------------
+        # Complete
+        # -------------------------------------------------
+
+        update_job(
+            job_id,
+            status="completed",
+            progress=100,
+            message="Project ready",
+            source_type=source_type,
+            repository_name=(
+                repository_name
+            ),
+            chunks_indexed=stored_count,
+            cached=False,
+        )
+
+    except Exception as error:
+        update_job(
+            job_id,
+            status="failed",
+            progress=0,
+            message=(
+                "We couldn't analyze this "
+                "project."
+            ),
+            error=str(error),
+        )
+
+
+@router.post("/index")
+def start_repository_analysis(
+    request: IndexRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Starts repository analysis and immediately
+    returns a job ID.
+
+    The actual analysis continues in the background.
     """
 
     user_input = request.repo_path.strip()
@@ -146,85 +462,52 @@ def index_repository(
             ),
         )
 
-    if is_github_url(
-        user_input
-    ):
-        repo_path = clone_github_repository(
-            user_input
-        )
+    job_id = str(
+        uuid.uuid4()
+    )
 
-        repository_name = repository_name_from_url(
-            user_input
-        )
+    analysis_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "progress": 0,
+        "message": (
+            "Starting project analysis..."
+        ),
+        "repository_input": user_input,
+    }
 
-        source_type = "github"
+    background_tasks.add_task(
+        run_repository_analysis,
+        job_id,
+        user_input,
+    )
 
-    else:
-        repo_path = (
-            Path(user_input)
-            .expanduser()
-            .resolve()
-        )
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "message": (
+            "Project analysis started"
+        ),
+    }
 
-        source_type = "local"
 
-        if not repo_path.exists():
-            raise HTTPException(
-                status_code=404,
-                detail=(
-                    "Repository path does not exist: "
-                    f"{repo_path}"
-                ),
-            )
+@router.get("/index/status/{job_id}")
+def get_repository_analysis_status(
+    job_id: str,
+):
+    """
+    Returns the current state of
+    an analysis job.
+    """
 
-        if not repo_path.is_dir():
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "The provided path is not "
-                    "a directory."
-                ),
-            )
+    job = analysis_jobs.get(
+        job_id
+    )
 
-        repository_name = repository_name_from_path(
-            repo_path
-        )
-
-    try:
-        chunks = chunk_repository(
-            str(repo_path)
-        )
-
-        if not chunks:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "No supported Python or Markdown "
-                    "content was found."
-                ),
-            )
-
-        stored_count = embed_and_store_chunks(
-            chunks,
-            repository_name=repository_name,
-        )
-
-        return {
-            "status": "success",
-            "source_type": source_type,
-            "repository_name": repository_name,
-            "repository": str(repo_path),
-            "chunks_indexed": stored_count,
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as error:
+    if job is None:
         raise HTTPException(
-            status_code=500,
-            detail=(
-                "Repository indexing failed: "
-                f"{str(error)}"
-            ),
-        ) from error
+            status_code=404,
+            detail="Analysis job not found.",
+        )
+
+    return job

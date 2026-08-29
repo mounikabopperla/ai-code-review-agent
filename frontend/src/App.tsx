@@ -2,54 +2,119 @@ import { useState } from "react";
 
 import ChatBox from "./components/ChatBox";
 import InputBox from "./components/InputBox";
+
 import {
   askQuestion,
-  indexRepository,
+  getProjectAnalysisStatus,
+  startProjectAnalysis,
 } from "./services/api";
+
 import type { ChatMessage } from "./types";
+
 
 function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
 
   const [repoPath, setRepoPath] = useState("");
-  const [indexing, setIndexing] = useState(false);
-  const [indexMessage, setIndexMessage] = useState("");
-  const [indexError, setIndexError] = useState("");
 
-  const [explanationMode, setExplanationMode] = useState("beginner");
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState(0);
+  const [analysisMessage, setAnalysisMessage] = useState("");
+  const [analysisError, setAnalysisError] = useState("");
 
-  async function handleIndexRepository() {
-    const trimmedPath = repoPath.trim();
+  const [projectReady, setProjectReady] = useState(false);
 
-    if (!trimmedPath) {
-      setIndexError("Please enter a repository path.");
-      setIndexMessage("");
-      return;
-    }
+  const [explanationMode, setExplanationMode] =
+    useState("beginner");
 
-    setIndexing(true);
-    setIndexError("");
-    setIndexMessage("");
 
-    try {
-      const response = await indexRepository(trimmedPath);
+  function wait(milliseconds: number) {
+    return new Promise((resolve) => {
+      setTimeout(resolve, milliseconds);
+    });
+  }
 
-      setIndexMessage(
-        `Indexed successfully: ${response.chunks_indexed} chunks from ${response.repository}`,
-      );
-    } catch (error) {
-      setIndexError(
-        error instanceof Error
-          ? error.message
-          : "Repository indexing failed.",
-      );
-    } finally {
-      setIndexing(false);
+
+  async function pollAnalysisStatus(jobId: string) {
+    while (true) {
+      const status =
+        await getProjectAnalysisStatus(jobId);
+
+      setAnalysisProgress(status.progress);
+      setAnalysisMessage(status.message);
+
+      if (status.status === "completed") {
+        setProjectReady(true);
+        setAnalyzing(false);
+
+        setAnalysisProgress(100);
+        setAnalysisMessage(
+          "Project ready — ask anything about this project.",
+        );
+
+        return;
+      }
+
+      if (status.status === "failed") {
+        throw new Error(
+          status.error ||
+            "We couldn't analyze this project.",
+        );
+      }
+
+      await wait(3000);
     }
   }
 
+
+  async function handleAnalyzeProject() {
+    const trimmedPath = repoPath.trim();
+
+    if (!trimmedPath) {
+      setAnalysisError(
+        "Please enter a GitHub repository URL or project path.",
+      );
+
+      return;
+    }
+
+    setAnalyzing(true);
+    setProjectReady(false);
+
+    setAnalysisError("");
+    setAnalysisProgress(0);
+    setAnalysisMessage(
+      "Starting project analysis...",
+    );
+
+    setMessages([]);
+
+    try {
+      const response =
+        await startProjectAnalysis(trimmedPath);
+
+      await pollAnalysisStatus(
+        response.job_id,
+      );
+    } catch (error) {
+      setAnalyzing(false);
+      setProjectReady(false);
+
+      setAnalysisError(
+        error instanceof Error
+          ? error.message
+          : "We couldn't analyze this project.",
+      );
+    }
+  }
+
+
   async function handleSend(question: string) {
+    if (!projectReady) {
+      return;
+    }
+
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -98,32 +163,38 @@ function App() {
     }
   }
 
+
   return (
     <main className="app-shell">
       <header className="app-header">
         <div className="brand-section">
           <h1>AI Code Review Agent</h1>
+
           <p>
-            Index a repository, then search and understand its code.
+            Understand unfamiliar software projects
+            with AI.
           </p>
         </div>
 
         <div className="status-badge">
           <span className="status-dot" />
-          RAG system online
+          AI system online
         </div>
       </header>
+
 
       <section className="repository-panel">
         <div className="repository-panel-header">
           <div>
-            <h2>Repository</h2>
+            <h2>Project</h2>
+
             <p>
-              Enter the full local path of the project you want to
-              analyze.
+              Paste a GitHub repository URL or enter
+              a local project path.
             </p>
           </div>
         </div>
+
 
         <div className="repository-controls">
           <input
@@ -131,55 +202,111 @@ function App() {
             type="text"
             value={repoPath}
             onChange={(event) => {
-              setRepoPath(event.target.value);
+              setRepoPath(
+                event.target.value,
+              );
 
-              if (indexError) {
-                setIndexError("");
+              if (analysisError) {
+                setAnalysisError("");
               }
             }}
-            placeholder="/Users/mounika/Documents/my-project"
-            disabled={indexing}
+            placeholder="https://github.com/username/project"
+            disabled={analyzing}
           />
 
           <button
             className="index-button"
             type="button"
-            onClick={handleIndexRepository}
-            disabled={indexing || !repoPath.trim()}
+            onClick={handleAnalyzeProject}
+            disabled={
+              analyzing ||
+              !repoPath.trim()
+            }
           >
-            {indexing ? "Indexing..." : "Index Repository"}
+            {analyzing
+              ? "Analyzing..."
+              : "Analyze Project"}
           </button>
         </div>
 
-        {indexMessage && (
+
+        {analyzing && (
+          <>
+            <div className="indexing-note">
+              {analysisMessage}
+            </div>
+
+            <div
+              style={{
+                marginTop: "12px",
+              }}
+            >
+              <div
+                style={{
+                  width: "100%",
+                  height: "8px",
+                  borderRadius: "999px",
+                  background:
+                    "rgba(255,255,255,0.08)",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${analysisProgress}%`,
+                    height: "100%",
+                    background:
+                      "linear-gradient(90deg, #3568ff, #7c3aed)",
+                    transition:
+                      "width 0.4s ease",
+                  }}
+                />
+              </div>
+
+              <div
+                style={{
+                  marginTop: "8px",
+                  fontSize: "0.9rem",
+                  opacity: 0.75,
+                }}
+              >
+                {analysisProgress}%
+              </div>
+            </div>
+          </>
+        )}
+
+
+        {projectReady && (
           <div className="index-status index-success">
             <span>✓</span>
-            {indexMessage}
+
+            Project ready — ask anything about
+            this project.
           </div>
         )}
 
-        {indexError && (
+
+        {analysisError && (
           <div className="index-status index-error">
             <span>!</span>
-            {indexError}
-          </div>
-        )}
 
-        {indexing && (
-          <div className="indexing-note">
-            Generating code chunks and embeddings. Large repositories
-            can take a few minutes.
+            {analysisError}
           </div>
         )}
       </section>
 
+
       <section className="explanation-panel">
         <div>
           <h2>Explanation Level</h2>
+
           <p>
-            Choose how deeply you want the code explained.
+            Choose how deeply you want the project
+            explained.
           </p>
         </div>
+
 
         <div className="explanation-options">
           <button
@@ -189,10 +316,15 @@ function App() {
                 ? "explanation-button active"
                 : "explanation-button"
             }
-            onClick={() => setExplanationMode("beginner")}
+            onClick={() =>
+              setExplanationMode(
+                "beginner",
+              )
+            }
           >
             Beginner
           </button>
+
 
           <button
             type="button"
@@ -201,10 +333,15 @@ function App() {
                 ? "explanation-button active"
                 : "explanation-button"
             }
-            onClick={() => setExplanationMode("intermediate")}
+            onClick={() =>
+              setExplanationMode(
+                "intermediate",
+              )
+            }
           >
             Intermediate
           </button>
+
 
           <button
             type="button"
@@ -213,12 +350,17 @@ function App() {
                 ? "explanation-button active"
                 : "explanation-button"
             }
-            onClick={() => setExplanationMode("expert")}
+            onClick={() =>
+              setExplanationMode(
+                "expert",
+              )
+            }
           >
             Expert
           </button>
         </div>
       </section>
+
 
       <section className="chat-layout">
         <ChatBox
@@ -228,11 +370,15 @@ function App() {
 
         <InputBox
           onSend={handleSend}
-          loading={loading}
+          loading={
+            loading ||
+            !projectReady
+          }
         />
       </section>
     </main>
   );
 }
+
 
 export default App;

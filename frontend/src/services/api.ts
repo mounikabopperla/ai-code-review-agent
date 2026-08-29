@@ -3,6 +3,7 @@ import type { AskResponse } from "../types";
 const BASE_URL =
   import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
+
 export async function askQuestion(
   question: string,
   explanationMode: string,
@@ -25,15 +26,35 @@ export async function askQuestion(
   return response.json();
 }
 
-export async function indexRepository(
-  repoPath: string,
-): Promise<{
+
+export type AnalysisStartResponse = {
+  job_id: string;
   status: string;
-  source_type?: string;
+  message: string;
+};
+
+
+export type AnalysisStatusResponse = {
+  job_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  progress: number;
+  message: string;
+
   repository_name?: string;
-  repository: string;
-  chunks_indexed: number;
-}> {
+  repository_input?: string;
+
+  chunks_found?: number;
+  chunks_indexed?: number;
+
+  source_type?: string;
+
+  error?: string;
+};
+
+
+export async function startProjectAnalysis(
+  repoPath: string,
+): Promise<AnalysisStartResponse> {
   const response = await fetch(`${BASE_URL}/index`, {
     method: "POST",
     headers: {
@@ -43,6 +64,21 @@ export async function indexRepository(
       repo_path: repoPath,
     }),
   });
+
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+
+  return response.json();
+}
+
+
+export async function getProjectAnalysisStatus(
+  jobId: string,
+): Promise<AnalysisStatusResponse> {
+  const response = await fetch(
+    `${BASE_URL}/index/status/${jobId}`,
+  );
 
   if (!response.ok) {
     throw new Error(await response.text());

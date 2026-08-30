@@ -103,6 +103,7 @@ def root():
         "message": "AI Code Review Agent API is running"
     }
 
+
 @app.get("/health")
 def health():
     return {
@@ -142,57 +143,3 @@ def project_overview(
         request.explanation_mode,
         collection_name,
     )
-
-    return {
-        "explanation_mode": request.explanation_mode,
-        "overview": overview,
-    }
-
-
-@app.get("/debug/indexed-files")
-def debug_indexed_files():
-    """
-    Temporary development endpoint used to inspect
-    which files are currently stored in the active
-    Click Qdrant collection.
-    """
-
-    from backend.vector_store.qdrant_store import (
-        get_qdrant_client,
-    )
-
-    client = get_qdrant_client()
-
-    collection_name = "repo_click"
-
-    results = client.scroll(
-        collection_name=collection_name,
-        limit=200,
-        with_payload=True,
-    )
-
-    points = results[0]
-
-    files = {}
-
-    for point in points:
-        payload = point.payload or {}
-
-        file_path = payload.get(
-            "file_path",
-            "Unknown",
-        )
-
-        files[file_path] = (
-            files.get(file_path, 0) + 1
-        )
-
-    return {
-        "collection": collection_name,
-        "total_points": len(points),
-        "files": files,
-        "core_py_chunks": files.get(
-            "src/click/core.py",
-            0,
-        ),
-    }

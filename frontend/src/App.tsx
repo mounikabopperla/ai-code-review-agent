@@ -6,6 +6,7 @@ import InputBox from "./components/InputBox";
 import {
   askQuestion,
   getProjectAnalysisStatus,
+  getProjectOverview,
   startProjectAnalysis,
 } from "./services/api";
 
@@ -25,6 +26,9 @@ function App() {
 
   const [projectReady, setProjectReady] = useState(false);
 
+  const [overviewLoading, setOverviewLoading] =
+    useState(false);
+
   const [explanationMode, setExplanationMode] =
     useState("beginner");
 
@@ -36,7 +40,9 @@ function App() {
   }
 
 
-  async function pollAnalysisStatus(jobId: string) {
+  async function pollAnalysisStatus(
+    jobId: string,
+  ) {
     while (true) {
       const status =
         await getProjectAnalysisStatus(jobId);
@@ -47,10 +53,12 @@ function App() {
       if (status.status === "completed") {
         setProjectReady(true);
         setAnalyzing(false);
-
         setAnalysisProgress(100);
+
         setAnalysisMessage(
-          "Project ready — ask anything about this project.",
+          status.cached
+            ? "Project ready — loaded from cache."
+            : "Project ready — analysis complete.",
         );
 
         return;
@@ -75,15 +83,15 @@ function App() {
       setAnalysisError(
         "Please enter a GitHub repository URL or project path.",
       );
-
       return;
     }
 
     setAnalyzing(true);
     setProjectReady(false);
-
+    setOverviewLoading(false);
     setAnalysisError("");
     setAnalysisProgress(0);
+
     setAnalysisMessage(
       "Starting project analysis...",
     );
@@ -92,7 +100,9 @@ function App() {
 
     try {
       const response =
-        await startProjectAnalysis(trimmedPath);
+        await startProjectAnalysis(
+          trimmedPath,
+        );
 
       await pollAnalysisStatus(
         response.job_id,
@@ -110,8 +120,89 @@ function App() {
   }
 
 
-  async function handleSend(question: string) {
+  async function handleGenerateOverview() {
+    if (
+      !projectReady ||
+      overviewLoading
+    ) {
+      return;
+    }
+
+    const trimmedPath =
+      repoPath.trim();
+
+    if (!trimmedPath) {
+      return;
+    }
+
+    setOverviewLoading(true);
+
+    const loadingMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      content:
+        "Generating a project overview. This may take a little longer on the free AI tier...",
+    };
+
+    setMessages((currentMessages) => [
+      ...currentMessages,
+      loadingMessage,
+    ]);
+
+    try {
+      const response =
+        await getProjectOverview(
+          explanationMode,
+          trimmedPath,
+        );
+
+      const overviewMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: response.overview,
+      };
+
+      setMessages((currentMessages) => [
+        ...currentMessages.filter(
+          (message) =>
+            message.id !== loadingMessage.id,
+        ),
+        overviewMessage,
+      ]);
+    } catch (error) {
+      const errorMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content:
+          error instanceof Error
+            ? `Could not generate the project overview: ${error.message}`
+            : "Could not generate the project overview.",
+      };
+
+      setMessages((currentMessages) => [
+        ...currentMessages.filter(
+          (message) =>
+            message.id !== loadingMessage.id,
+        ),
+        errorMessage,
+      ]);
+    } finally {
+      setOverviewLoading(false);
+    }
+  }
+
+
+  async function handleSend(
+    question: string,
+  ) {
     if (!projectReady) {
+      return;
+    }
+
+    const trimmedPath =
+      repoPath.trim();
+
+    if (!trimmedPath) {
       return;
     }
 
@@ -129,10 +220,12 @@ function App() {
     setLoading(true);
 
     try {
-      const response = await askQuestion(
-        question,
-        explanationMode,
-      );
+      const response =
+        await askQuestion(
+          question,
+          explanationMode,
+          trimmedPath,
+        );
 
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -166,7 +259,9 @@ function App() {
 
   return (
     <main className="app-shell">
+
       <header className="app-header">
+
         <div className="brand-section">
           <h1>AI Code Review Agent</h1>
 
@@ -180,11 +275,14 @@ function App() {
           <span className="status-dot" />
           AI system online
         </div>
+
       </header>
 
 
       <section className="repository-panel">
+
         <div className="repository-panel-header">
+
           <div>
             <h2>Project</h2>
 
@@ -193,10 +291,12 @@ function App() {
               a local project path.
             </p>
           </div>
+
         </div>
 
 
         <div className="repository-controls">
+
           <input
             className="repository-input"
             type="text"
@@ -217,7 +317,9 @@ function App() {
           <button
             className="index-button"
             type="button"
-            onClick={handleAnalyzeProject}
+            onClick={
+              handleAnalyzeProject
+            }
             disabled={
               analyzing ||
               !repoPath.trim()
@@ -227,6 +329,7 @@ function App() {
               ? "Analyzing..."
               : "Analyze Project"}
           </button>
+
         </div>
 
 
@@ -241,6 +344,7 @@ function App() {
                 marginTop: "12px",
               }}
             >
+
               <div
                 style={{
                   width: "100%",
@@ -251,6 +355,7 @@ function App() {
                   overflow: "hidden",
                 }}
               >
+
                 <div
                   style={{
                     width: `${analysisProgress}%`,
@@ -261,6 +366,7 @@ function App() {
                       "width 0.4s ease",
                   }}
                 />
+
               </div>
 
               <div
@@ -272,32 +378,58 @@ function App() {
               >
                 {analysisProgress}%
               </div>
+
             </div>
           </>
         )}
 
 
         {projectReady && (
-          <div className="index-status index-success">
-            <span>✓</span>
+          <>
+            <div className="index-status index-success">
+              <span>✓</span>
+              {analysisMessage}
+            </div>
 
-            Project ready — ask anything about
-            this project.
-          </div>
+            <div
+              style={{
+                marginTop: "14px",
+              }}
+            >
+
+              <button
+                className="index-button"
+                type="button"
+                onClick={
+                  handleGenerateOverview
+                }
+                disabled={
+                  overviewLoading ||
+                  loading
+                }
+              >
+                {overviewLoading
+                  ? "Generating Overview..."
+                  : "Generate Project Overview"}
+              </button>
+
+            </div>
+          </>
         )}
 
 
         {analysisError && (
           <div className="index-status index-error">
             <span>!</span>
-
             {analysisError}
           </div>
         )}
+
       </section>
 
 
       <section className="explanation-panel">
+
         <div>
           <h2>Explanation Level</h2>
 
@@ -309,6 +441,7 @@ function App() {
 
 
         <div className="explanation-options">
+
           <button
             type="button"
             className={
@@ -358,11 +491,14 @@ function App() {
           >
             Expert
           </button>
+
         </div>
+
       </section>
 
 
       <section className="chat-layout">
+
         <ChatBox
           messages={messages}
           loading={loading}
@@ -372,10 +508,13 @@ function App() {
           onSend={handleSend}
           loading={
             loading ||
+            overviewLoading ||
             !projectReady
           }
         />
+
       </section>
+
     </main>
   );
 }

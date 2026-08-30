@@ -1,12 +1,15 @@
-from backend.embeddings.model import load_embedding_model
 from backend.embeddings.embed_chunks import generate_embedding
+
 from backend.vector_store.qdrant_store import (
+    SPARSE_VECTOR_NAME,
     get_active_collection,
     get_qdrant_client,
 )
 
 
-def detect_query_intent(question: str) -> str:
+def detect_query_intent(
+    question: str,
+) -> str:
     """
     Classifies the user's question into a simple
     retrieval intent.
@@ -108,24 +111,37 @@ def retrieval_bonus(
 
 
 def search_vectors(
-    query_vector: list[float],
+    query_vector=None,
     question: str = "",
     limit: int = 5,
+    collection_name: str | None = None,
 ):
     """
-    Searches only the currently active repository
-    collection, then reranks the results.
+    Searches a repository using local BM25 sparse retrieval.
+
+    If collection_name is provided, that specific Qdrant
+    collection is searched.
+
+    If collection_name is not provided, the currently active
+    collection is used for backward compatibility.
+
+    This allows the application to support explicit
+    repository selection for multi-user deployment.
     """
 
     client = get_qdrant_client()
 
-    collection_name = (
-        get_active_collection()
-    )
+    if collection_name is None:
+        collection_name = get_active_collection()
 
     intent = detect_query_intent(
         question
     )
+
+    if query_vector is None:
+        query_vector = generate_embedding(
+            question
+        )
 
     candidate_limit = max(
         limit * 4,
@@ -135,6 +151,7 @@ def search_vectors(
     response = client.query_points(
         collection_name=collection_name,
         query=query_vector,
+        using=SPARSE_VECTOR_NAME,
         limit=candidate_limit,
         with_payload=True,
     )
@@ -155,22 +172,9 @@ def search_vectors(
 
 
 if __name__ == "__main__":
-    client, model_name = (
-        load_embedding_model()
-    )
-
-    query = (
-        "What does this project do?"
-    )
-
-    query_vector = generate_embedding(
-        query,
-        client,
-        model_name,
-    )
+    query = "What does this project do?"
 
     results = search_vectors(
-        query_vector,
         question=query,
         limit=5,
     )

@@ -238,6 +238,7 @@ def test_same_commit_reuses_cached_collection(
             "collection_name": "repo_project",
             "status": "completed",
             "chunks_indexed": 120,
+            "index_version": indexing_routes.INDEX_SCHEMA_VERSION,
         },
     )
 

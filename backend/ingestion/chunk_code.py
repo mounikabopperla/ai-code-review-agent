@@ -1,11 +1,13 @@
 """
 Splits a repository into useful code and documentation chunks
-for embedding and retrieval.
+for retrieval.
 
-The production indexer intentionally skips low-value content such as
-tests, examples, generated files, virtual environments, and build
-artifacts so repository indexing stays fast enough for an interactive
-application.
+The indexer prioritizes important production source files so
+critical application logic is not accidentally excluded simply
+because files happen to be alphabetically later in the repository.
+
+Tests, examples, generated files, dependencies, and build
+artifacts are skipped.
 """
 
 import argparse
@@ -23,8 +25,8 @@ logging.basicConfig(
 logger = logging.getLogger("code-chunker")
 
 
-# Directories that usually do not help answer questions
-# about the main application architecture.
+# Directories that usually do not help answer questions about
+# the main application architecture.
 EXCLUDED_DIRS = {
     "venv",
     ".venv",
@@ -47,13 +49,43 @@ EXCLUDED_DIRS = {
 }
 
 
-# Prevent a very large repository from creating thousands
-# of embeddings on a small cloud server.
+# Maximum number of chunks stored for one repository.
+#
+# This keeps indexing practical for deployment while the
+# priority system below makes the limited slots more useful.
 MAX_TOTAL_CHUNKS = 120
 
-# Keep documentation useful, but prevent documentation-heavy
-# repositories from dominating the index.
+
+# Maximum documentation chunks.
 MAX_DOCUMENT_CHUNKS = 20
+
+
+# Important source files are processed first.
+#
+# These names are intentionally generic enough to work across
+# many Python repositories.
+IMPORTANT_FILE_NAMES = {
+    "main.py": 100,
+    "app.py": 95,
+    "application.py": 95,
+    "core.py": 95,
+    "server.py": 90,
+    "api.py": 90,
+    "router.py": 90,
+    "routes.py": 90,
+    "pipeline.py": 85,
+    "service.py": 80,
+    "services.py": 80,
+    "parser.py": 80,
+    "engine.py": 80,
+    "manager.py": 75,
+    "models.py": 75,
+    "types.py": 75,
+    "utils.py": 70,
+    "decorators.py": 70,
+    "config.py": 65,
+    "__init__.py": 60,
+}
 
 
 def should_skip_path(path: Path) -> bool:
@@ -73,12 +105,57 @@ def should_skip_path(path: Path) -> bool:
     )
 
 
+def file_priority(path: Path) -> tuple:
+    """
+    Returns a deterministic priority for a source file.
+
+    Important application files are processed first.
+    Files inside src/ are preferred over less central locations.
+    """
+
+    name = path.name.lower()
+
+    priority = IMPORTANT_FILE_NAMES.get(
+        name,
+        10,
+    )
+
+    relative_parts = [
+        part.lower()
+        for part in path.parts
+    ]
+
+    src_bonus = (
+        20
+        if "src" in relative_parts
+        else 0
+    )
+
+    package_bonus = (
+        10
+        if len(relative_parts) >= 2
+        and relative_parts[-2] not in {
+            "",
+            ".",
+        }
+        else 0
+    )
+
+    return (
+        priority + src_bonus,
+        str(path).lower(),
+    )
+
+
 def find_python_files(
     repo_path: Path,
 ) -> list[Path]:
     """
-    Find production Python files while skipping tests,
-    dependencies, examples, and generated folders.
+    Find production Python files while skipping
+    tests, dependencies, examples, and generated folders.
+
+    Files are ordered by architectural importance rather
+    than simple alphabetical order.
     """
 
     py_files = []
@@ -89,8 +166,11 @@ def find_python_files(
 
         py_files.append(path)
 
-    # Keep indexing deterministic.
-    return sorted(py_files)
+    return sorted(
+        py_files,
+        key=file_priority,
+        reverse=True,
+    )
 
 
 def find_document_files(
@@ -114,8 +194,9 @@ def find_document_files(
         )
 
         is_readme = (
-            path.name.lower()
-            .startswith("readme")
+            path.name.lower().startswith(
+                "readme"
+            )
         )
 
         is_docs_file = (
@@ -127,7 +208,6 @@ def find_document_files(
         if is_readme or is_docs_file:
             document_files.append(path)
 
-    # README first, then remaining documentation.
     return sorted(
         document_files,
         key=lambda path: (
@@ -136,7 +216,7 @@ def find_document_files(
                 "readme"
             )
             else 1,
-            str(path),
+            str(path).lower(),
         ),
     )
 
@@ -147,13 +227,15 @@ def extract_chunks_from_file(
 ) -> list[dict]:
     """
     Parse one Python file into function/class chunks.
+
+    A module-level fallback is created when the file does not
+    contain classes or functions.
     """
 
     try:
         source = file_path.read_text(
             encoding="utf-8"
         )
-
     except (
         UnicodeDecodeError,
         OSError,
@@ -169,7 +251,6 @@ def extract_chunks_from_file(
             source,
             filename=str(file_path),
         )
-
     except SyntaxError as error:
         logger.warning(
             f"Skipping file with syntax error "
@@ -187,17 +268,33 @@ def extract_chunks_from_file(
 
     chunks = []
 
-    for node in ast.walk(tree):
-        if not isinstance(
+    # Sort AST nodes by source location so chunks are
+    # deterministic and follow the file naturally.
+    nodes = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(
             node,
             (
                 ast.FunctionDef,
                 ast.AsyncFunctionDef,
                 ast.ClassDef,
             ),
-        ):
-            continue
+        )
+    ]
 
+    nodes.sort(
+        key=lambda node: (
+            node.lineno,
+            getattr(
+                node,
+                "end_lineno",
+                node.lineno,
+            ),
+        )
+    )
+
+    for node in nodes:
         start_line = node.lineno
 
         end_line = getattr(
@@ -231,6 +328,7 @@ def extract_chunks_from_file(
                 "chunk_id": (
                     f"{relative_path}"
                     f"::{node.name}"
+                    f"::{start_line}"
                 ),
                 "file_path": relative_path,
                 "name": node.name,
@@ -280,7 +378,6 @@ def extract_document_chunks(
         text = file_path.read_text(
             encoding="utf-8"
         )
-
     except (
         UnicodeDecodeError,
         OSError,
@@ -335,12 +432,8 @@ def extract_document_chunks(
                 "name": current_heading,
                 "type": "documentation",
                 "docstring": "",
-                "source_code": (
-                    section_text
-                ),
-                "start_line": (
-                    section_start_line
-                ),
+                "source_code": section_text,
+                "start_line": section_start_line,
                 "end_line": end_line,
             }
         )
@@ -352,9 +445,7 @@ def extract_document_chunks(
         lines,
         start=1,
     ):
-        stripped_line = (
-            line.strip()
-        )
+        stripped_line = line.strip()
 
         if stripped_line.startswith(
             "#"
@@ -399,8 +490,8 @@ def chunk_repository(
     Chunk useful production Python code and
     selected documentation.
 
-    Very large repositories are capped so indexing
-    remains practical on limited cloud compute.
+    Important source files are processed first so the
+    total chunk limit favors core application logic.
     """
 
     repo_path = Path(
@@ -429,10 +520,12 @@ def chunk_repository(
         f"documentation files"
     )
 
+    # -----------------------------------------------------
+    # Documentation
+    # -----------------------------------------------------
+
     documentation_chunks = []
 
-    # Documentation first so README/project-level
-    # context is guaranteed to survive the total cap.
     for file_path in document_files:
         file_chunks = (
             extract_document_chunks(
@@ -446,9 +539,7 @@ def chunk_repository(
         )
 
         if (
-            len(
-                documentation_chunks
-            )
+            len(documentation_chunks)
             >= MAX_DOCUMENT_CHUNKS
         ):
             documentation_chunks = (
@@ -458,14 +549,16 @@ def chunk_repository(
             )
             break
 
-    code_chunks = []
+    # -----------------------------------------------------
+    # Code
+    # -----------------------------------------------------
 
     available_code_slots = (
         MAX_TOTAL_CHUNKS
-        - len(
-            documentation_chunks
-        )
+        - len(documentation_chunks)
     )
+
+    code_chunks = []
 
     for file_path in python_files:
         file_chunks = (
@@ -475,19 +568,30 @@ def chunk_repository(
             )
         )
 
+        if not file_chunks:
+            continue
+
+        remaining_slots = (
+            available_code_slots
+            - len(code_chunks)
+        )
+
+        if remaining_slots <= 0:
+            break
+
+        # Important files are processed first.
+        # Their chunks therefore receive priority when
+        # the repository reaches the production limit.
         code_chunks.extend(
-            file_chunks
+            file_chunks[
+                :remaining_slots
+            ]
         )
 
         if (
             len(code_chunks)
             >= available_code_slots
         ):
-            code_chunks = (
-                code_chunks[
-                    :available_code_slots
-                ]
-            )
             break
 
     all_chunks = (
@@ -560,21 +664,14 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--repo-path",
-        required=True,
-        help=(
-            "Path to the repository "
-            "to index."
-        ),
+        "repo_path",
+        help="Path to the repository",
     )
 
     parser.add_argument(
         "--output",
         default="chunks.jsonl",
-        help=(
-            "Where to save "
-            "the chunks."
-        ),
+        help="Output JSONL file",
     )
 
     args = parser.parse_args()

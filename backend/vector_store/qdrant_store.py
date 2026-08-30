@@ -1,13 +1,12 @@
 import re
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import SparseVectorParams
 
 
 QDRANT_PATH = "qdrant_storage"
 
-# Voyage embeddings are configured to produce 512-dimensional vectors.
-VECTOR_SIZE = 512
+SPARSE_VECTOR_NAME = "bm25"
 
 
 _client: QdrantClient | None = None
@@ -18,6 +17,7 @@ def get_qdrant_client() -> QdrantClient:
     """
     Returns one shared Qdrant client for the backend.
     """
+
     global _client
 
     if _client is None:
@@ -58,6 +58,7 @@ def set_active_collection(
     """
     Marks a repository collection as active.
     """
+
     global _active_collection
 
     _active_collection = collection_name
@@ -81,8 +82,8 @@ def ensure_repository_collection(
     repository_name: str,
 ):
     """
-    Creates a dedicated Qdrant collection
-    for a repository if necessary.
+    Creates a dedicated sparse-vector Qdrant
+    collection for a repository if necessary.
     """
 
     client = get_qdrant_client()
@@ -96,10 +97,12 @@ def ensure_repository_collection(
     ):
         client.create_collection(
             collection_name=collection_name,
-            vectors_config=VectorParams(
-                size=VECTOR_SIZE,
-                distance=Distance.COSINE,
-            ),
+            vectors_config={},
+            sparse_vectors_config={
+                SPARSE_VECTOR_NAME: (
+                    SparseVectorParams()
+                ),
+            },
         )
 
     set_active_collection(
@@ -113,11 +116,8 @@ def reset_repository_collection(
     repository_name: str,
 ):
     """
-    Deletes and recreates this repository's
-    Qdrant collection.
-
-    This is important when embedding dimensions
-    or repository contents change.
+    Deletes and recreates a repository collection
+    using local BM25 sparse vectors.
     """
 
     client = get_qdrant_client()
@@ -135,10 +135,12 @@ def reset_repository_collection(
 
     client.create_collection(
         collection_name=collection_name,
-        vectors_config=VectorParams(
-            size=VECTOR_SIZE,
-            distance=Distance.COSINE,
-        ),
+        vectors_config={},
+        sparse_vectors_config={
+            SPARSE_VECTOR_NAME: (
+                SparseVectorParams()
+            ),
+        },
     )
 
     set_active_collection(

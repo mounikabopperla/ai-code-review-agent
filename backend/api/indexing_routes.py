@@ -1,4 +1,5 @@
 from pathlib import Path
+
 import shutil
 import subprocess
 import uuid
@@ -8,19 +9,24 @@ from fastapi import (
     BackgroundTasks,
     HTTPException,
 )
+
 from pydantic import BaseModel
 
 from backend.ingestion.chunk_code import (
     chunk_repository,
 )
+
 from backend.embeddings.embed_chunks import (
     embed_and_store_chunks,
 )
+
 from backend.storage.repository_cache import (
+    INDEX_SCHEMA_VERSION,
     get_cached_repository,
     initialize_database,
     save_repository,
 )
+
 from backend.vector_store.qdrant_store import (
     sanitize_collection_name,
     set_active_collection,
@@ -37,8 +43,8 @@ initialize_database()
 # ---------------------------------------------------------
 # Temporary in-memory analysis job storage
 #
-# Later we can move this to SQL as well so job status
-# survives server restarts.
+# Later this can be moved to SQL so job status survives
+# server restarts.
 # ---------------------------------------------------------
 
 analysis_jobs: dict[str, dict] = {}
@@ -219,8 +225,15 @@ def run_repository_analysis(
     Performs repository analysis in the background.
 
     GitHub repositories are checked against the
-    SQLite cache before expensive chunking and
-    embedding work is performed.
+    SQLite cache before chunking and BM25 indexing
+    work is performed.
+
+    Cached repositories are reused only when:
+
+    1. Previous indexing completed successfully.
+    2. The Git commit SHA has not changed.
+    3. The index schema matches the current
+       BM25 sparse-vector schema.
     """
 
     repo_path = None
@@ -229,6 +242,7 @@ def run_repository_analysis(
     commit_sha = None
 
     try:
+
         # -------------------------------------------------
         # Stage 1 — read project
         # -------------------------------------------------
@@ -241,6 +255,7 @@ def run_repository_analysis(
         )
 
         if is_github_url(user_input):
+
             source_type = "github"
 
             repository_name = (
@@ -277,6 +292,9 @@ def run_repository_analysis(
                 and cached_repository.get(
                     "commit_sha"
                 ) == commit_sha
+                and cached_repository.get(
+                    "index_version"
+                ) == INDEX_SCHEMA_VERSION
             ):
                 cached_collection = (
                     cached_repository[
@@ -292,9 +310,7 @@ def run_repository_analysis(
                     job_id,
                     status="completed",
                     progress=100,
-                    message=(
-                        "Project ready"
-                    ),
+                    message="Project ready",
                     source_type=source_type,
                     repository_name=(
                         repository_name
@@ -311,6 +327,7 @@ def run_repository_analysis(
                 return
 
         else:
+
             source_type = "local"
 
             repo_path = (
@@ -363,6 +380,9 @@ def run_repository_analysis(
 
         # -------------------------------------------------
         # Stage 3 — prepare project
+        #
+        # embed_and_store_chunks now uses local BM25
+        # sparse vectors rather than Voyage embeddings.
         # -------------------------------------------------
 
         update_job(
@@ -390,6 +410,7 @@ def run_repository_analysis(
         # -------------------------------------------------
 
         if source_type == "github":
+
             collection_name = (
                 sanitize_collection_name(
                     repository_name
@@ -407,6 +428,9 @@ def run_repository_analysis(
                 ),
                 status="completed",
                 chunks_indexed=stored_count,
+                index_version=(
+                    INDEX_SCHEMA_VERSION
+                ),
             )
 
         # -------------------------------------------------
@@ -427,28 +451,26 @@ def run_repository_analysis(
         )
 
     except Exception as error:
+
         update_job(
             job_id,
             status="failed",
-            progress=0,
+            progress=100,
             message=(
-                "We couldn't analyze this "
-                "project."
+                "Project analysis failed."
             ),
             error=str(error),
         )
 
 
 @router.post("/index")
-def start_repository_analysis(
+def index_repository(
     request: IndexRequest,
     background_tasks: BackgroundTasks,
 ):
     """
-    Starts repository analysis and immediately
-    returns a job ID.
-
-    The actual analysis continues in the background.
+    Starts repository analysis in the background
+    and immediately returns a job ID.
     """
 
     user_input = request.repo_path.strip()
@@ -457,8 +479,8 @@ def start_repository_analysis(
         raise HTTPException(
             status_code=400,
             detail=(
-                "Repository path or GitHub URL "
-                "is required."
+                "Please provide a repository "
+                "path or GitHub URL."
             ),
         )
 
@@ -471,9 +493,14 @@ def start_repository_analysis(
         "status": "queued",
         "progress": 0,
         "message": (
-            "Starting project analysis..."
+            "Project analysis queued."
         ),
-        "repository_input": user_input,
+        "source_type": None,
+        "repository_name": None,
+        "chunks_found": 0,
+        "chunks_indexed": 0,
+        "cached": False,
+        "error": None,
     }
 
     background_tasks.add_task(
@@ -486,18 +513,19 @@ def start_repository_analysis(
         "job_id": job_id,
         "status": "queued",
         "message": (
-            "Project analysis started"
+            "Project analysis started."
         ),
     }
 
 
-@router.get("/index/status/{job_id}")
-def get_repository_analysis_status(
+@router.get(
+    "/index/status/{job_id}"
+)
+def get_index_status(
     job_id: str,
 ):
     """
-    Returns the current state of
-    an analysis job.
+    Returns the current repository-analysis status.
     """
 
     job = analysis_jobs.get(
@@ -507,7 +535,9 @@ def get_repository_analysis_status(
     if job is None:
         raise HTTPException(
             status_code=404,
-            detail="Analysis job not found.",
+            detail=(
+                "Analysis job was not found."
+            ),
         )
 
     return job

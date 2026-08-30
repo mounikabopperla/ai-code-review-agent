@@ -1,9 +1,12 @@
 import sqlite3
+
 from pathlib import Path
 from datetime import datetime, timezone
 
 
 DATABASE_PATH = Path("repository_cache.db")
+
+INDEX_SCHEMA_VERSION = "bm25_v2"
 
 
 def get_connection() -> sqlite3.Connection:
@@ -11,7 +14,9 @@ def get_connection() -> sqlite3.Connection:
     Opens a connection to the local SQLite cache database.
     """
 
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(
+        DATABASE_PATH
+    )
 
     connection.row_factory = sqlite3.Row
 
@@ -21,6 +26,10 @@ def get_connection() -> sqlite3.Connection:
 def initialize_database() -> None:
     """
     Creates the repository cache table if it does not exist.
+
+    Also upgrades older cache databases so repositories
+    indexed with the previous dense Voyage format can be
+    distinguished from the new BM25 sparse format.
     """
 
     with get_connection() as connection:
@@ -34,10 +43,28 @@ def initialize_database() -> None:
                 collection_name TEXT NOT NULL,
                 status TEXT NOT NULL,
                 chunks_indexed INTEGER DEFAULT 0,
-                analyzed_at TEXT NOT NULL
+                analyzed_at TEXT NOT NULL,
+                index_version TEXT NOT NULL
+                    DEFAULT 'bm25_v1'
             )
             """
         )
+
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(repositories)"
+            ).fetchall()
+        }
+
+        if "index_version" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE repositories
+                ADD COLUMN index_version TEXT
+                NOT NULL DEFAULT 'legacy_dense'
+                """
+            )
 
         connection.commit()
 
@@ -48,6 +75,8 @@ def get_cached_repository(
     """
     Returns cached repository metadata if available.
     """
+
+    initialize_database()
 
     with get_connection() as connection:
         row = connection.execute(
@@ -73,10 +102,16 @@ def save_repository(
     collection_name: str,
     status: str,
     chunks_indexed: int,
+    index_version: str = INDEX_SCHEMA_VERSION,
 ) -> None:
     """
     Inserts or updates repository cache metadata.
+
+    New successful indexes are stored using the current
+    BM25 index schema version.
     """
+
+    initialize_database()
 
     analyzed_at = datetime.now(
         timezone.utc
@@ -92,9 +127,10 @@ def save_repository(
                 collection_name,
                 status,
                 chunks_indexed,
-                analyzed_at
+                analyzed_at,
+                index_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 
             ON CONFLICT(repository_url)
             DO UPDATE SET
@@ -103,7 +139,8 @@ def save_repository(
                 collection_name = excluded.collection_name,
                 status = excluded.status,
                 chunks_indexed = excluded.chunks_indexed,
-                analyzed_at = excluded.analyzed_at
+                analyzed_at = excluded.analyzed_at,
+                index_version = excluded.index_version
             """,
             (
                 repository_url,
@@ -113,6 +150,7 @@ def save_repository(
                 status,
                 chunks_indexed,
                 analyzed_at,
+                index_version,
             ),
         )
 

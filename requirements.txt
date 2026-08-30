@@ -3,13 +3,8 @@ uvicorn==0.52.1
 pydantic==2.13.4
 pydantic-settings==2.14.2
 python-dotenv==1.2.2
-
 google-genai==2.16.0
-voyageai
-
-qdrant-client==1.18.0
-
+qdrant-client[fastembed]==1.18.0
 numpy==2.5.1
 requests==2.34.2
-
 pytest==9.1.1

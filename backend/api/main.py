@@ -103,6 +103,12 @@ def root():
         "message": "AI Code Review Agent API is running"
     }
 
+@app.get("/health")
+def health():
+    return {
+        "status": "ok"
+    }
+
 
 @app.post("/ask")
 def ask_codebase(

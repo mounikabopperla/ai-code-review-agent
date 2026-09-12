@@ -30,6 +30,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run backend tests
+        env:
+          GOOGLE_API_KEY: test-google-key
+          GEMINI_MODEL: gemini-test-model
+          VOYAGE_API_KEY: test-voyage-key
         run: |
           pytest -q
 

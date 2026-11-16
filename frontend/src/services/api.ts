@@ -2,7 +2,7 @@ import type { AskResponse } from "../types";
 
 const BASE_URL =
   import.meta.env.VITE_API_URL ||
-  "http://127.0.0.1:8000";
+  "https://ai-code-review-agent-i5jf.onrender.com";
 
 
 export async function askQuestion(

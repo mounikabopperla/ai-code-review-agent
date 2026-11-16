@@ -40,6 +40,7 @@ app.add_middleware(
         "http://localhost:5174",
         "http://127.0.0.1:5174",
         "https://ai-code-review-agent-omega.vercel.app",
+        "https://ai-code-review-agent-1-7tzq.onrender.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],

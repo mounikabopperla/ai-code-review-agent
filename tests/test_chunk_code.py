@@ -136,3 +136,13 @@ def test_module_configuration_and_decorators_are_preserved(tmp_path):
 def test_repository_tests_are_searchable(tmp_path):
     write_file(tmp_path, "tests/test_feature.py", "def test_feature():\n    pass\n")
     assert any(c['name'] == 'test_feature' for c in chunk_repository(str(tmp_path)))
+
+
+def test_symlinks_cannot_index_files_outside_repository(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "private.py"
+    outside.write_text("PRIVATE_VALUE = 'test sentinel'\n")
+    (repo / "leak.py").symlink_to(outside)
+    (repo / "README.md").symlink_to(outside)
+    assert chunk_repository(str(repo)) == []

@@ -160,6 +160,8 @@ def find_python_files(
     py_files = []
 
     for path in repo_path.rglob("*.py"):
+        if path.is_symlink() or not path.resolve().is_relative_to(repo_path.resolve()):
+            continue
         if should_skip_path(path.relative_to(repo_path)):
             continue
 
@@ -185,6 +187,8 @@ def find_document_files(
     document_files = []
 
     for path in repo_path.rglob("*.md"):
+        if path.is_symlink() or not path.resolve().is_relative_to(repo_path.resolve()):
+            continue
         if should_skip_path(path.relative_to(repo_path)):
             continue
 

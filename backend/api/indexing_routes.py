@@ -1,6 +1,12 @@
 from pathlib import Path
 
 import shutil
+import re
+import os
+import hashlib
+import tempfile
+from urllib.parse import urlsplit
+from threading import Lock
 import subprocess
 import uuid
 
@@ -30,6 +36,7 @@ from backend.storage.repository_cache import (
 from backend.vector_store.qdrant_store import (
     sanitize_collection_name,
     set_active_collection,
+    get_qdrant_client,
 )
 
 
@@ -68,101 +75,66 @@ def is_github_url(value: str) -> bool:
     )
 
 
-def repository_name_from_url(
-    url: str,
-) -> str:
-    """
-    Extracts repository name from a GitHub URL.
-    """
-
-    repo_name = (
-        url.rstrip("/")
-        .split("/")[-1]
-    )
-
-    if repo_name.endswith(".git"):
-        repo_name = repo_name[:-4]
-
-    return repo_name
-
-
-def repository_name_from_path(
-    repo_path: Path,
-) -> str:
-    """
-    Uses the local directory name as
-    the repository name.
-    """
-
-    return repo_path.name
+def repository_name_from_url(url: str) -> str:
+    """Validate a GitHub URL and retain both owner and repository identity."""
+    parsed = urlsplit(url.strip())
+    if (parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != "github.com"
+            or parsed.query or parsed.fragment):
+        raise ValueError("Provide a GitHub repository URL: https://github.com/owner/repository")
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) != 2:
+        raise ValueError("Provide a repository URL, not a branch or file URL.")
+    owner, name = parts
+    if name.endswith(".git"):
+        name = name[:-4]
+    if any(not re.fullmatch(r"[A-Za-z0-9_.-]+", part) or part in {".", ".."} for part in (owner, name)):
+        raise ValueError("Invalid GitHub owner or repository name.")
+    identity = f"{owner.lower()}/{name.lower()}"
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
+    return f"{owner.lower()}_{name.lower()}_{digest}"
 
 
-def clone_github_repository(
-    url: str,
-) -> Path:
-    """
-    Clones a public GitHub repository locally.
-    """
+def repository_name_from_path(repo_path: Path) -> str:
+    digest = hashlib.sha256(str(repo_path.resolve()).encode()).hexdigest()[:12]
+    return f"{repo_path.name}_{digest}"
 
-    CLONED_REPOS_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
 
-    repo_name = repository_name_from_url(
-        url
-    )
-
-    if not repo_name:
-        raise ValueError(
-            "Could not determine repository "
-            "name from GitHub URL."
-        )
-
-    destination = (
-        CLONED_REPOS_DIR
-        / repo_name
-    ).resolve()
-
-    if destination.exists():
-        shutil.rmtree(
-            destination
-        )
-
+def clone_github_repository(url: str) -> Path:
+    repository_name_from_url(url)  # Validate before creating or removing anything.
+    CLONED_REPOS_DIR.mkdir(parents=True, exist_ok=True)
+    destination = Path(tempfile.mkdtemp(prefix="analysis_", dir=CLONED_REPOS_DIR)).resolve()
     try:
         subprocess.run(
-            [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                url,
-                str(destination),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
+            ["git", "clone", "--depth", "1", "--", url, str(destination)],
+            check=True, capture_output=True, text=True, timeout=120,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
-
-    except FileNotFoundError as error:
-        raise RuntimeError(
-            "Git is not installed or "
-            "could not be found."
-        ) from error
-
-    except subprocess.CalledProcessError as error:
-        message = (
-            error.stderr.strip()
-            or error.stdout.strip()
-            or "Git clone failed."
-        )
-
-        raise RuntimeError(
-            "Could not read this GitHub project: "
-            f"{message}"
-        ) from error
-
+    except Exception as error:
+        shutil.rmtree(destination, ignore_errors=True)
+        if isinstance(error, subprocess.TimeoutExpired):
+            raise RuntimeError("Cloning timed out after 120 seconds.") from error
+        raise RuntimeError("Could not clone this public GitHub repository. Check the URL and server logs.") from error
     return destination
+
+
+def collection_is_available(name: str, expected_count: int) -> bool:
+    client = get_qdrant_client()
+    return (expected_count > 0 and client.collection_exists(name)
+            and client.count(collection_name=name, exact=True).count == expected_count)
+
+
+def get_remote_commit_sha(url: str) -> str | None:
+    """Check HEAD without downloading a repository; fall back to clone on failure."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--", url, "HEAD"],
+            check=True, capture_output=True, text=True, timeout=20,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        sha = result.stdout.split()[0] if result.stdout.split() else ""
+        return sha if re.fullmatch(r"[a-fA-F0-9]{40,64}", sha) else None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def get_repository_commit_sha(
@@ -217,7 +189,7 @@ def update_job(
     )
 
 
-def run_repository_analysis(
+def _run_repository_analysis(
     job_id: str,
     user_input: str,
 ):
@@ -264,6 +236,18 @@ def run_repository_analysis(
                 )
             )
 
+            cached = get_cached_repository(user_input)
+            if (cached and cached.get("status") == "completed"
+                    and cached.get("index_version") == INDEX_SCHEMA_VERSION
+                    and cached.get("commit_sha")
+                    and get_remote_commit_sha(user_input) == cached["commit_sha"]
+                    and collection_is_available(cached["collection_name"], cached.get("chunks_indexed", 0))):
+                set_active_collection(cached["collection_name"])
+                update_job(job_id, status="completed", progress=100, message="Project ready",
+                           source_type=source_type, repository_name=repository_name,
+                           chunks_indexed=cached["chunks_indexed"], cached=True)
+                return
+
             repo_path = clone_github_repository(
                 user_input
             )
@@ -295,6 +279,7 @@ def run_repository_analysis(
                 and cached_repository.get(
                     "index_version"
                 ) == INDEX_SCHEMA_VERSION
+                and collection_is_available(cached_repository["collection_name"], cached_repository.get("chunks_indexed", 0))
             ):
                 cached_collection = (
                     cached_repository[
@@ -328,6 +313,8 @@ def run_repository_analysis(
 
         else:
 
+            if os.getenv("ALLOW_LOCAL_REPOSITORIES", "false").lower() != "true":
+                raise ValueError("Local paths are disabled on this server. Use a public GitHub repository URL.")
             source_type = "local"
 
             repo_path = (
@@ -462,6 +449,21 @@ def run_repository_analysis(
             error=str(error),
         )
 
+    finally:
+        if source_type == "github" and repo_path is not None:
+            # Only delete temporary folders created by this request.
+            resolved = repo_path.resolve()
+            if resolved.parent == CLONED_REPOS_DIR.resolve() and resolved.name.startswith("analysis_"):
+                shutil.rmtree(resolved, ignore_errors=True)
+
+
+# Embedded Qdrant and collection replacement require serialized indexing.
+_analysis_lock = Lock()
+
+def run_repository_analysis(job_id: str, user_input: str):
+    with _analysis_lock:
+        _run_repository_analysis(job_id, user_input)
+
 
 @router.post("/index")
 def index_repository(
@@ -483,6 +485,14 @@ def index_repository(
                 "path or GitHub URL."
             ),
         )
+
+    if is_github_url(user_input):
+        try:
+            repository_name_from_url(user_input)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+    elif os.getenv("ALLOW_LOCAL_REPOSITORIES", "false").lower() != "true":
+        raise HTTPException(status_code=400, detail="Use a public GitHub repository URL. Local paths are disabled.")
 
     job_id = str(
         uuid.uuid4()

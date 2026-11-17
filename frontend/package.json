@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:stream": "tsc --ignoreConfig src/services/stream.ts --target ES2022 --module ES2022 --moduleResolution bundler --skipLibCheck --outDir ../work/stream-tests && node --test tests/stream.test.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",

@@ -1,7 +1,9 @@
+from backend.storage.repository_cache import collection_revision
+
 from backend.retrieval.search import search_vectors
 
 from backend.llm.generator import (
-    ask_gemini,
+    stream_gemini,
     build_grounded_prompt,
 )
 
@@ -81,7 +83,7 @@ def build_sources(
     )
 
 
-def answer_question(
+def stream_answer_question(
     question: str,
     explanation_mode: str = "beginner",
     collection_name: str | None = None,
@@ -111,15 +113,9 @@ def answer_question(
         explanation_mode,
     )
 
-    answer = ask_gemini(
-        prompt
-    )
-
-    sources = build_sources(
-        retrieved_chunks,
-    )
-
-    return answer + sources
+    namespace = f"{collection_name}:{collection_revision(collection_name)}"
+    yield from stream_gemini(prompt, namespace)
+    yield build_sources(retrieved_chunks)
 
 
 def _chunk_identity(
@@ -206,7 +202,7 @@ def retrieve_overview_chunks(
     return retrieved_chunks
 
 
-def generate_project_overview(
+def stream_project_overview(
     explanation_mode: str = "beginner",
     collection_name: str | None = None,
 ) -> str:
@@ -222,10 +218,8 @@ def generate_project_overview(
     )
 
     if not retrieved_chunks:
-        return (
-            "I could not find enough indexed project "
-            "content to generate an overview."
-        )
+        yield "I could not find enough indexed project content to generate an overview."
+        return
 
     overview_request = """
 Give me a structured overview of this project.
@@ -268,15 +262,17 @@ the available context, say so clearly.
         explanation_mode,
     )
 
-    answer = ask_gemini(
-        prompt
-    )
+    namespace = f"{collection_name}:{collection_revision(collection_name)}"
+    yield from stream_gemini(prompt, namespace)
+    yield build_sources(retrieved_chunks)
 
-    sources = build_sources(
-        retrieved_chunks,
-    )
 
-    return answer + sources
+def answer_question(question: str, explanation_mode: str = "beginner", collection_name: str | None = None) -> str:
+    return "".join(stream_answer_question(question, explanation_mode, collection_name))
+
+
+def generate_project_overview(explanation_mode: str = "beginner", collection_name: str | None = None) -> str:
+    return "".join(stream_project_overview(explanation_mode, collection_name))
 
 
 if __name__ == "__main__":

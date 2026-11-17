@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import ChatBox from "./components/ChatBox";
 import InputBox from "./components/InputBox";
 
 import {
-  askQuestion,
+  streamQuestion,
+  checkBackendHealth,
   getProjectAnalysisStatus,
-  getProjectOverview,
+  streamOverview,
   startProjectAnalysis,
 } from "./services/api";
 
@@ -14,6 +15,18 @@ import type { ChatMessage } from "./types";
 
 
 function App() {
+  const [backendStatus, setBackendStatus] = useState("Checking backend…");
+  useEffect(() => {
+    let active = true;
+    const check = () => checkBackendHealth().then(
+      () => { if (active) setBackendStatus("Backend online"); },
+      () => { if (active) setBackendStatus("Backend unavailable"); },
+    );
+    void check();
+    const timer = setInterval(() => { void check(); }, 150_000);
+    return () => { active = false; clearInterval(timer); };
+  }, []);
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -43,7 +56,8 @@ function App() {
   async function pollAnalysisStatus(
     jobId: string,
   ) {
-    while (true) {
+    const deadline = Date.now() + 10 * 60 * 1000;
+    while (Date.now() < deadline) {
       const status =
         await getProjectAnalysisStatus(jobId);
 
@@ -73,6 +87,7 @@ function App() {
 
       await wait(3000);
     }
+    throw new Error("Analysis timed out. Please retry or check the backend logs.");
   }
 
 
@@ -150,25 +165,11 @@ function App() {
     ]);
 
     try {
-      const response =
-        await getProjectOverview(
-          explanationMode,
-          trimmedPath,
-        );
-
-      const overviewMessage: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: response.overview,
-      };
-
-      setMessages((currentMessages) => [
-        ...currentMessages.filter(
-          (message) =>
-            message.id !== loadingMessage.id,
-        ),
-        overviewMessage,
-      ]);
+      await streamOverview(explanationMode, trimmedPath, (text) => {
+        setMessages((current) => current.map((message) =>
+          message.id === loadingMessage.id ? { ...message, content: text } : message,
+        ));
+      });
     } catch (error) {
       const errorMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -218,25 +219,15 @@ function App() {
     ]);
 
     setLoading(true);
+    const answerId = crypto.randomUUID();
+    setMessages((current) => [...current, { id: answerId, role: "assistant", content: "Thinking…" }]);
 
     try {
-      const response =
-        await askQuestion(
-          question,
-          explanationMode,
-          trimmedPath,
-        );
-
-      const assistantMessage: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: response.answer,
-      };
-
-      setMessages((currentMessages) => [
-        ...currentMessages,
-        assistantMessage,
-      ]);
+      await streamQuestion(question, explanationMode, trimmedPath, (text) => {
+        setMessages((current) => current.map((message) =>
+          message.id === answerId ? { ...message, content: text } : message,
+        ));
+      });
     } catch (error) {
       const errorMessage: ChatMessage = {
         id: crypto.randomUUID(),
@@ -247,10 +238,11 @@ function App() {
             : "An unexpected error occurred.",
       };
 
-      setMessages((currentMessages) => [
-        ...currentMessages,
-        errorMessage,
-      ]);
+      setMessages((currentMessages) => currentMessages.map((message) =>
+        message.id === answerId
+          ? { ...message, content: `${message.content === "Thinking…" ? "" : message.content + "\n\n"}${errorMessage.content}` }
+          : message,
+      ));
     } finally {
       setLoading(false);
     }
@@ -272,8 +264,8 @@ function App() {
         </div>
 
         <div className="status-badge">
-          <span className="status-dot" />
-          AI system online
+          <span className="status-dot" style={{ background: backendStatus === "Backend online" ? "#34d399" : "#f59e0b" }} />
+          {backendStatus}
         </div>
 
       </header>
@@ -287,8 +279,7 @@ function App() {
             <h2>Project</h2>
 
             <p>
-              Paste a GitHub repository URL or enter
-              a local project path.
+              Paste a public GitHub repository URL. Python and selected Markdown files are indexed (up to 120 chunks).
             </p>
           </div>
 
@@ -302,6 +293,9 @@ function App() {
             type="text"
             value={repoPath}
             onChange={(event) => {
+              setProjectReady(false);
+              setMessages([]);
+              setAnalysisMessage("");
               setRepoPath(
                 event.target.value,
               );
@@ -311,7 +305,7 @@ function App() {
               }
             }}
             placeholder="https://github.com/username/project"
-            disabled={analyzing}
+            disabled={analyzing || loading || overviewLoading}
           />
 
           <button
@@ -321,7 +315,7 @@ function App() {
               handleAnalyzeProject
             }
             disabled={
-              analyzing ||
+              analyzing || loading || overviewLoading ||
               !repoPath.trim()
             }
           >

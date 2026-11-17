@@ -12,7 +12,7 @@ Run with:  pytest tests/test_repo_loader.py -v
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 from ingestion.repo_loader import (

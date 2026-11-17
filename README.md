@@ -513,7 +513,7 @@ Example:
 
 ```text
 GOOGLE_API_KEY=your_google_api_key
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.6-flash
 ```
 
 Never commit `.env` or API keys to GitHub.

@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+
+from backend.config.settings import settings
+from backend.llm.generator import ask_gemini
 
 from pydantic import BaseModel
 
@@ -112,19 +115,62 @@ def health():
     }
 
 
+@app.get("/health/ai")
+def health_ai():
+    """
+    Checks Gemini without exposing any secret.
+
+    Returns only: whether a key is configured (true/false,
+    never the key itself), the model name, and whether a
+    tiny Gemini call succeeds. Mounika can open this URL
+    herself to see if the key/model is the problem.
+    """
+    try:
+        answer = ask_gemini("Reply with only the word ok.")
+    except Exception as error:
+        return {
+            "status": "error",
+            "stage": "gemini",
+            "model": settings.gemini_model,
+            "key_configured": bool(settings.google_api_key),
+            "error": str(error),
+        }
+
+    return {
+        "status": "ok",
+        "stage": "gemini",
+        "model": settings.gemini_model,
+        "key_configured": bool(settings.google_api_key),
+        "answer": answer.strip()[:20],
+    }
+
+
 @app.post("/ask")
 def ask_codebase(
     request: QuestionRequest,
 ):
-    collection_name = resolve_collection_name(
-        request.repo_path
-    )
+    try:
+        collection_name = resolve_collection_name(
+            request.repo_path
+        )
 
-    answer = answer_question(
-        request.question,
-        request.explanation_mode,
-        collection_name,
-    )
+        answer = answer_question(
+            request.question,
+            request.explanation_mode,
+            collection_name,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+    except RuntimeError as error:
+        # Gemini / retrieval failure: return the safe,
+        # actionable message instead of a generic 500.
+        raise HTTPException(
+            status_code=502,
+            detail=str(error),
+        ) from error
 
     return {
         "question": request.question,
@@ -136,11 +182,26 @@ def ask_codebase(
 def project_overview(
     request: ProjectOverviewRequest,
 ):
-    collection_name = resolve_collection_name(
-        request.repo_path
-    )
+    try:
+        collection_name = resolve_collection_name(
+            request.repo_path
+        )
 
-    overview = generate_project_overview(
-        request.explanation_mode,
-        collection_name,
-    )
+        overview = generate_project_overview(
+            request.explanation_mode,
+            collection_name,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=str(error),
+        ) from error
+
+    return {
+        "overview": overview,
+    }

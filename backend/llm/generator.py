@@ -7,7 +7,67 @@ from backend.config.settings import settings
 from backend.llm.formatter import wrap_code_if_needed
 
 
-client = genai.Client(api_key=settings.google_api_key)
+client = genai.Client(
+    api_key=settings.google_api_key,
+    # 60s per Gemini request, so a stuck generation fails
+    # with a clear timeout instead of hanging /ask for minutes.
+    http_options={"timeout": 60_000},
+)
+
+
+def _gemini_error_message(error: Exception) -> str:
+    """
+    Turns a Gemini failure into a safe, actionable message.
+
+    Only the HTTP status / error kind is used, never the
+    API key or the raw error body, so this message is safe
+    to return to the frontend and to show in Render logs.
+    """
+    code = (
+        getattr(error, "code", None)
+        or getattr(error, "status_code", None)
+        or getattr(
+            getattr(error, "response", None),
+            "status_code",
+            None,
+        )
+    )
+    text = str(error).lower()
+
+    if code in (401, 403) or "unauthenticated" in text:
+        return (
+            "Gemini authentication failed (401/403). "
+            "The GOOGLE_API_KEY set in Render is missing, "
+            "invalid, or expired. Update it in Render "
+            "under Environment, then redeploy."
+        )
+    if code == 404 or "not found" in text or "is not found" in text:
+        return (
+            "Gemini model not found (404). The GEMINI_MODEL "
+            "set in Render is wrong or retired. Use a current "
+            "model name from Google AI Studio, for example "
+            "gemini-2.5-flash, then redeploy."
+        )
+    if code == 429 or "quota" in text or "rate limit" in text:
+        return (
+            "Gemini quota / rate limit reached (429). "
+            "Wait a while or check usage in Google AI Studio."
+        )
+    if code in (500, 502, 503) or "servererror" in type(error).__name__.lower():
+        return (
+            "Gemini is temporarily unavailable (server error). "
+            "Please try again shortly."
+        )
+    if "timed out" in text or "timeout" in text:
+        return (
+            "Gemini timed out after 60 seconds. "
+            "Try a shorter question or try again shortly."
+        )
+    return (
+        "Gemini request failed. Check the Render logs for "
+        "the full server-side error and verify "
+        "GOOGLE_API_KEY and GEMINI_MODEL in Render."
+    )
 
 
 def build_grounded_prompt(
@@ -221,10 +281,22 @@ def ask_gemini(prompt: str) -> str:
         except errors.ServerError as error:
             if attempt == max_attempts:
                 raise RuntimeError(
-                    "Gemini is temporarily unavailable. "
-                    "Please try again shortly."
+                    _gemini_error_message(error)
                 ) from error
 
             time.sleep(2 ** attempt)
+
+        except errors.APIError as error:
+            # Client errors (401/403/404/429) will not fix
+            # themselves by retrying, so fail fast with a
+            # safe message instead of a generic 500.
+            raise RuntimeError(
+                _gemini_error_message(error)
+            ) from error
+
+        except Exception as error:
+            raise RuntimeError(
+                _gemini_error_message(error)
+            ) from error
 
     raise RuntimeError("Gemini request failed.")

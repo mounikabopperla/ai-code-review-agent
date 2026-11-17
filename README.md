@@ -12,7 +12,7 @@ The application allows users to provide a GitHub repository, index its source co
 https://ai-code-review-agent-omega.vercel.app
 
 **Backend API:**
-https://ai-code-review-agent-production-41af.up.railway.app
+https://ai-code-review-agent-i5jf.onrender.com
 
 **GitHub Repository:**
 https://github.com/mounikabopperla/ai-code-review-agent
@@ -54,7 +54,7 @@ This creates a repository-aware AI assistant capable of explaining and answering
 - Nginx frontend serving
 - Automated testing with Pytest
 - GitHub Actions CI
-- Production deployment using Vercel and Railway
+- Production deployment using Vercel and Render
 - Environment-based API key management
 
 ---
@@ -162,7 +162,7 @@ The generated explanation is returned through the FastAPI backend and displayed 
                                     │
                                     ▼
                          ┌──────────────────────┐
-                         │   Railway Backend    │
+                         │   Render Backend     │
                          │       FastAPI        │
                          └──────────┬───────────┘
                                     │
@@ -248,7 +248,7 @@ What are the main components of this repository?
 ### Infrastructure
 
 - Vercel
-- Railway
+- Render
 - Docker
 - Docker Compose
 - Nginx
@@ -353,6 +353,14 @@ ai-code-review-agent/
 ```http
 GET /health
 ```
+
+### AI Health Check
+
+```http
+GET /health/ai
+```
+
+Checks Gemini with a tiny test call. It returns only whether a key is configured (true/false, never the key itself), the model name, and whether Gemini answered. Use it to tell a bad key/model apart from a code bug.
 
 Example response:
 
@@ -505,7 +513,7 @@ Example:
 
 ```text
 GOOGLE_API_KEY=your_google_api_key
-GEMINI_MODEL=your_gemini_model
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
 Never commit `.env` or API keys to GitHub.
@@ -573,7 +581,7 @@ React + TypeScript + Vite
 
 ### Backend
 
-**Platform:** Railway
+**Platform:** Render
 
 ```text
 FastAPI
@@ -592,7 +600,7 @@ https://ai-code-review-agent-omega.vercel.app
 
 **Backend API:**
 
-https://ai-code-review-agent-production-41af.up.railway.app
+https://ai-code-review-agent-i5jf.onrender.com
 
 ---
 
@@ -676,7 +684,7 @@ The system is therefore best viewed as a repository-aware code understanding ass
 **Status:** Production Deployed
 
 - Frontend: Vercel
-- Backend: Railway
+- Backend: Render
 - Health endpoint: Working
 - Gemini integration: Working
 - Qdrant integration: Working

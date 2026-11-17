@@ -36,7 +36,7 @@ TEST_REPOSITORY_URL = (
     "https://github.com/example/project.git"
 )
 
-TEST_REPOSITORY_NAME = "project"
+TEST_REPOSITORY_NAME = indexing_routes.repository_name_from_url(TEST_REPOSITORY_URL)
 
 TEST_REPOSITORY_PATH = Path(
     "/tmp/project"
@@ -59,12 +59,13 @@ def create_test_job(job_id: str) -> None:
 
 
 @pytest.fixture(autouse=True)
-def clear_analysis_jobs():
+def clear_analysis_jobs(monkeypatch):
     """
     Keeps tests isolated from one another.
     """
 
     indexing_routes.analysis_jobs.clear()
+    monkeypatch.setattr(indexing_routes, "get_remote_commit_sha", lambda url: None)
 
     yield
 
@@ -192,7 +193,7 @@ def test_new_repository_is_analyzed_and_cached(
 
     assert (
         saved["collection_name"]
-        == "repo_project"
+        == indexing_routes.sanitize_collection_name(TEST_REPOSITORY_NAME)
     )
 
     assert saved["status"] == "completed"
@@ -208,6 +209,7 @@ def test_same_commit_reuses_cached_collection(
     should be skipped.
     """
 
+    monkeypatch.setattr(indexing_routes, "collection_is_available", lambda *args: True)
     job_id = "cached-repository-job"
 
     create_test_job(job_id)
@@ -235,7 +237,7 @@ def test_same_commit_reuses_cached_collection(
                 TEST_REPOSITORY_NAME
             ),
             "commit_sha": "same-commit",
-            "collection_name": "repo_project",
+            "collection_name": indexing_routes.sanitize_collection_name(TEST_REPOSITORY_NAME),
             "status": "completed",
             "chunks_indexed": 120,
             "index_version": indexing_routes.INDEX_SCHEMA_VERSION,
@@ -309,7 +311,7 @@ def test_same_commit_reuses_cached_collection(
     assert job["chunks_indexed"] == 120
 
     assert activated_collections == [
-        "repo_project"
+        indexing_routes.sanitize_collection_name(TEST_REPOSITORY_NAME)
     ]
 
 
@@ -349,7 +351,7 @@ def test_changed_commit_is_analyzed_again(
                 TEST_REPOSITORY_NAME
             ),
             "commit_sha": "old-commit",
-            "collection_name": "repo_project",
+            "collection_name": indexing_routes.sanitize_collection_name(TEST_REPOSITORY_NAME),
             "status": "completed",
             "chunks_indexed": 100,
         },
@@ -425,3 +427,16 @@ def test_changed_commit_is_analyzed_again(
     )
 
     assert saved["chunks_indexed"] == 1
+
+def test_unchanged_remote_head_skips_clone(monkeypatch):
+    job_id = "remote-cached"
+    create_test_job(job_id)
+    monkeypatch.setattr(indexing_routes, "get_remote_commit_sha", lambda url: "same")
+    monkeypatch.setattr(indexing_routes, "get_cached_repository", lambda url: {
+        "status": "completed", "commit_sha": "same", "index_version": indexing_routes.INDEX_SCHEMA_VERSION,
+        "collection_name": "repo_cached", "chunks_indexed": 10,
+    })
+    monkeypatch.setattr(indexing_routes, "collection_is_available", lambda *args: True)
+    monkeypatch.setattr(indexing_routes, "clone_github_repository", lambda *args: pytest.fail("Cache hit must not clone"))
+    indexing_routes.run_repository_analysis(job_id, TEST_REPOSITORY_URL)
+    assert indexing_routes.analysis_jobs[job_id]["cached"] is True

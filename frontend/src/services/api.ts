@@ -1,8 +1,35 @@
+import { consumeAnswerStream } from "./stream";
 import type { AskResponse } from "../types";
 
-const BASE_URL =
-  import.meta.env.VITE_API_URL ||
-  "https://ai-code-review-agent-i5jf.onrender.com";
+const BASE_URL = (
+  import.meta.env.VITE_API_URL?.trim() ||
+  (import.meta.env.DEV ? "http://127.0.0.1:8000" : "https://ai-code-review-agent-i5jf.onrender.com")
+).replace(/\/+$/, "");
+
+async function apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch {
+    throw new Error(`Cannot reach the backend at ${BASE_URL}. It may be starting or unavailable. Please retry shortly. If this continues, contact the site owner with this backend address.`);
+  }
+  if (!response.ok) {
+    const body = await response.text();
+    let detail = body;
+    try { detail = JSON.parse(body).detail || body; } catch { /* Plain-text server error. */ }
+    throw new Error(`Request failed (${response.status}): ${detail}`);
+  }
+  return response;
+}
+
+export async function checkBackendHealth(): Promise<void> {
+  const response = await apiFetch(`${BASE_URL}/health`);
+  const body = await response.json();
+  if (body.status !== "ok") throw new Error("Backend is not ready");
+}
 
 
 export async function askQuestion(
@@ -10,7 +37,7 @@ export async function askQuestion(
   explanationMode: string,
   repoPath: string,
 ): Promise<AskResponse> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${BASE_URL}/ask`,
     {
       method: "POST",
@@ -24,12 +51,6 @@ export async function askQuestion(
       }),
     },
   );
-
-  if (!response.ok) {
-    throw new Error(
-      await response.text(),
-    );
-  }
 
   return response.json();
 }
@@ -45,7 +66,7 @@ export async function getProjectOverview(
   explanationMode: string,
   repoPath: string,
 ): Promise<ProjectOverviewResponse> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${BASE_URL}/project/overview`,
     {
       method: "POST",
@@ -58,12 +79,6 @@ export async function getProjectOverview(
       }),
     },
   );
-
-  if (!response.ok) {
-    throw new Error(
-      await response.text(),
-    );
-  }
 
   return response.json();
 }
@@ -98,7 +113,7 @@ export type AnalysisStatusResponse = {
 export async function startProjectAnalysis(
   repoPath: string,
 ): Promise<AnalysisStartResponse> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${BASE_URL}/index`,
     {
       method: "POST",
@@ -111,12 +126,6 @@ export async function startProjectAnalysis(
     },
   );
 
-  if (!response.ok) {
-    throw new Error(
-      await response.text(),
-    );
-  }
-
   return response.json();
 }
 
@@ -124,15 +133,28 @@ export async function startProjectAnalysis(
 export async function getProjectAnalysisStatus(
   jobId: string,
 ): Promise<AnalysisStatusResponse> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${BASE_URL}/index/status/${jobId}`,
   );
 
-  if (!response.ok) {
-    throw new Error(
-      await response.text(),
-    );
-  }
-
   return response.json();
+}
+
+async function readAnswerStream(
+  path: string, body: object, onText: (text: string) => void,
+): Promise<string> {
+  const response = await apiFetch(`${BASE_URL}${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return consumeAnswerStream(response, onText);
+}
+
+
+export function streamQuestion(question: string, explanationMode: string, repoPath: string, onText: (text: string) => void) {
+  return readAnswerStream("/ask/stream", { question, explanation_mode: explanationMode, repo_path: repoPath }, onText);
+}
+
+export function streamOverview(explanationMode: string, repoPath: string, onText: (text: string) => void) {
+  return readAnswerStream("/project/overview/stream", { explanation_mode: explanationMode, repo_path: repoPath }, onText);
 }

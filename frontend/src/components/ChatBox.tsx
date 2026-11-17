@@ -26,7 +26,7 @@ function ChatBox({ messages, loading }: ChatBoxProps) {
           <h2>Ask about your codebase</h2>
 
           <p>
-            Search functions, classes, files, tests, and implementation details
+            Search indexed Python functions, classes, tests, and documentation
             from the indexed repository.
           </p>
 

@@ -1,13 +1,20 @@
+import json
+import logging
+from typing import Literal
+from fastapi.responses import StreamingResponse
+
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.rag.pipeline import (
     answer_question,
+    stream_answer_question,
+    stream_project_overview,
     generate_project_overview,
 )
 
@@ -49,13 +56,13 @@ app.add_middleware(
 
 
 class QuestionRequest(BaseModel):
-    question: str
-    explanation_mode: str = "beginner"
+    question: str = Field(min_length=1, max_length=8000)
+    explanation_mode: Literal["beginner", "intermediate", "expert"] = "beginner"
     repo_path: str
 
 
 class ProjectOverviewRequest(BaseModel):
-    explanation_mode: str = "beginner"
+    explanation_mode: Literal["beginner", "intermediate", "expert"] = "beginner"
     repo_path: str
 
 
@@ -116,9 +123,10 @@ def health():
 def ask_codebase(
     request: QuestionRequest,
 ):
-    collection_name = resolve_collection_name(
-        request.repo_path
-    )
+    try:
+        collection_name = resolve_collection_name(request.repo_path)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
     answer = answer_question(
         request.question,
@@ -136,11 +144,47 @@ def ask_codebase(
 def project_overview(
     request: ProjectOverviewRequest,
 ):
-    collection_name = resolve_collection_name(
-        request.repo_path
-    )
+    try:
+        collection_name = resolve_collection_name(request.repo_path)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
     overview = generate_project_overview(
         request.explanation_mode,
         collection_name,
     )
+
+    return {"explanation_mode": request.explanation_mode, "overview": overview}
+
+
+def stream_response(chunks):
+    def events():
+        try:
+            for text in chunks:
+                if text:
+                    yield "data: " + json.dumps({"type": "delta", "text": text}) + "\n\n"
+            yield 'data: {"type":"done"}\n\n'
+        except Exception:
+            logging.getLogger(__name__).warning("Answer stream failed")
+            yield 'data: {"type":"error","message":"The answer could not be completed. Please retry; the AI service may be busy."}\n\n'
+    return StreamingResponse(events(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+    })
+
+
+@app.post("/ask/stream")
+def ask_stream(request: QuestionRequest):
+    try:
+        collection = resolve_collection_name(request.repo_path)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return stream_response(stream_answer_question(request.question, request.explanation_mode, collection))
+
+
+@app.post("/project/overview/stream")
+def overview_stream(request: ProjectOverviewRequest):
+    try:
+        collection = resolve_collection_name(request.repo_path)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return stream_response(stream_project_overview(request.explanation_mode, collection))

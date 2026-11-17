@@ -12,7 +12,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from ingestion.chunk_code import chunk_repository
+from backend.ingestion.chunk_code import chunk_repository
 
 
 def write_file(tmp_path, relative_path, content):
@@ -102,7 +102,7 @@ def test_excluded_directories_are_skipped(tmp_path):
 def test_chunk_id_includes_file_path_and_name(tmp_path):
     write_file(tmp_path, "utils/helpers.py", "def helper_fn():\n    pass")
     chunks = chunk_repository(str(tmp_path))
-    assert chunks[0]["chunk_id"] == "utils/helpers.py::helper_fn"
+    assert chunks[0]["chunk_id"] == "utils/helpers.py::helper_fn::1"
 
 
 def test_multiple_files_all_get_chunked(tmp_path):
@@ -124,3 +124,15 @@ async def fetch_data():
     chunks = chunk_repository(str(tmp_path))
     assert len(chunks) == 1
     assert chunks[0]["name"] == "fetch_data"
+
+
+def test_module_configuration_and_decorators_are_preserved(tmp_path):
+    write_file(tmp_path, "main.py", 'SETTING = 42\n@route("/health")\ndef health():\n    return SETTING\n')
+    chunks = chunk_repository(str(tmp_path))
+    assert any('SETTING = 42' in c['source_code'] for c in chunks)
+    assert any('@route("/health")' in c['source_code'] for c in chunks)
+
+
+def test_repository_tests_are_searchable(tmp_path):
+    write_file(tmp_path, "tests/test_feature.py", "def test_feature():\n    pass\n")
+    assert any(c['name'] == 'test_feature' for c in chunk_repository(str(tmp_path)))

@@ -1,12 +1,14 @@
+import os
+
 import sqlite3
 
 from pathlib import Path
 from datetime import datetime, timezone
 
 
-DATABASE_PATH = Path("repository_cache.db")
+DATABASE_PATH = Path(os.getenv("REPOSITORY_CACHE_PATH", "repository_cache.db"))
 
-INDEX_SCHEMA_VERSION = "bm25_v2"
+INDEX_SCHEMA_VERSION = "bm25_v3"
 
 
 def get_connection() -> sqlite3.Connection:
@@ -14,6 +16,7 @@ def get_connection() -> sqlite3.Connection:
     Opens a connection to the local SQLite cache database.
     """
 
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(
         DATABASE_PATH
     )
@@ -155,3 +158,12 @@ def save_repository(
         )
 
         connection.commit()
+
+def collection_revision(collection_name: str) -> str:
+    initialize_database()
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT commit_sha, index_version FROM repositories WHERE collection_name = ? AND status = 'completed' ORDER BY analyzed_at DESC LIMIT 1",
+            (collection_name,),
+        ).fetchone()
+    return f"{row[0]}:{row[1]}" if row else "unversioned"

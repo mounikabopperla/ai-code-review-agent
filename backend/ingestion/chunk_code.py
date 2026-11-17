@@ -35,13 +35,12 @@ EXCLUDED_DIRS = {
     "node_modules",
     ".pytest_cache",
     "data",
+    "cloned_repos",
+    "qdrant_storage",
     "build",
     "dist",
     "coverage",
     ".coverage",
-    "tests",
-    "test",
-    "testing",
     "examples",
     "example",
     "benchmarks",
@@ -161,7 +160,7 @@ def find_python_files(
     py_files = []
 
     for path in repo_path.rglob("*.py"):
-        if should_skip_path(path):
+        if should_skip_path(path.relative_to(repo_path)):
             continue
 
         py_files.append(path)
@@ -186,7 +185,7 @@ def find_document_files(
     document_files = []
 
     for path in repo_path.rglob("*.md"):
-        if should_skip_path(path):
+        if should_skip_path(path.relative_to(repo_path)):
             continue
 
         relative_path = path.relative_to(
@@ -272,7 +271,7 @@ def extract_chunks_from_file(
     # deterministic and follow the file naturally.
     nodes = [
         node
-        for node in ast.walk(tree)
+        for node in tree.body
         if isinstance(
             node,
             (
@@ -295,7 +294,7 @@ def extract_chunks_from_file(
     )
 
     for node in nodes:
-        start_line = node.lineno
+        start_line = min([node.lineno] + [d.lineno for d in node.decorator_list])
 
         end_line = getattr(
             node,
@@ -339,6 +338,20 @@ def extract_chunks_from_file(
                 "end_line": end_line,
             }
         )
+
+    if chunks:
+        # Preserve imports, configuration and startup statements outside definitions.
+        definitions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        for node in tree.body:
+            if isinstance(node, definitions):
+                continue
+            start, end = node.lineno, node.end_lineno
+            chunks.append({
+                "chunk_id": f"{relative_path}::_module_level::{start}",
+                "file_path": relative_path, "name": "_module_level", "type": "module",
+                "docstring": "", "source_code": "\n".join(source_lines[start - 1:end]),
+                "start_line": start, "end_line": end,
+            })
 
     if not chunks and source.strip():
         chunks.append(
